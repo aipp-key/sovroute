@@ -98,6 +98,21 @@ async function main() {
     await sleep(3000);
   } else {
     console.log('Channel already exists.');
+    const chan = channels[0];
+    const localBal = BigInt(chan.local_balance || 0);
+    const remoteBal = BigInt(chan.remote_balance || 0);
+    if (localBal < 350_000n && remoteBal > 200_000n) {
+      const rebalanceAmt = 350_000n;
+      console.log(`Rebalancing channel: restoring Node B local liquidity by ${rebalanceAmt} sats...`);
+      try {
+        const inv = JSON.parse(runLnB(`addinvoice --amt=${rebalanceAmt} --memo="auto-bootstrap-rebalance"`));
+        runLnA(`payinvoice --force ${inv.payment_request}`);
+        runBtc(`-rpcwallet=miner generatetoaddress 1 ${minerAddr}`);
+        console.log('Channel rebalanced successfully.');
+      } catch (err) {
+        console.warn('Channel rebalance warning:', err.message);
+      }
+    }
   }
 
   // 7. Verify active channel

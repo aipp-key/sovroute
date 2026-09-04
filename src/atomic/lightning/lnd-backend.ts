@@ -135,6 +135,11 @@ export class LndLightningAtomicBackend implements ILightningAtomicBackend {
     return this.mapLndState(invoice.state);
   }
 
+  public async getBlockHeight(): Promise<number> {
+    const info = await this.client.getInfo();
+    return info.block_height;
+  }
+
   /**
    * Authoritative recovery query for process restarts.
    */
@@ -157,12 +162,16 @@ export class LndLightningAtomicBackend implements ILightningAtomicBackend {
 
     // Check if HTLC is in ACCEPTED state
     let acceptedAt: Date | undefined;
+    let expiryHeight: number | undefined;
     if (state === 'ACCEPTED' || state === 'SETTLED') {
       const acceptedHtlc = lnd.htlcs?.find((h) => h.state === 'ACCEPTED' || h.state === 'SETTLED');
-      if (acceptedHtlc && acceptedHtlc.accept_time && acceptedHtlc.accept_time !== '0') {
-        acceptedAt = new Date(Number(acceptedHtlc.accept_time) * 1000);
-      } else {
-        acceptedAt = createdAt;
+      if (acceptedHtlc) {
+        expiryHeight = acceptedHtlc.expiry_height;
+        if (acceptedHtlc.accept_time && acceptedHtlc.accept_time !== '0') {
+          acceptedAt = new Date(Number(acceptedHtlc.accept_time) * 1000);
+        } else {
+          acceptedAt = createdAt;
+        }
       }
     }
 
@@ -171,6 +180,7 @@ export class LndLightningAtomicBackend implements ILightningAtomicBackend {
       bolt11: lnd.payment_request,
       amountSats: BigInt(lnd.value),
       cltvExpiryBlocks: Number(lnd.cltv_expiry),
+      expiryHeight,
       state,
       createdAt,
       acceptedAt,

@@ -12,6 +12,8 @@ import type {
   EvmHtlcParams,
   EvmHtlcState,
   SecretPreimage,
+  EvmHtlcClaimedEvidence,
+  EvmHtlcRefundedEvidence,
 } from '../types.ts';
 
 interface StoredHtlc {
@@ -26,10 +28,17 @@ interface StoredHtlc {
 
 export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
   readonly backendName = 'FakeEvmAtomicBackend';
-  readonly chainId = 42161; // Arbitrum One
+  readonly chainId = 42161; // Arbitrum One / Base Sepolia test mock
+  public finalityPolicy?: { policyTag: string; requiredConfirmations: number } | undefined = {
+    policyTag: 'BASE_SEPOLIA_TEST_POLICY',
+    requiredConfirmations: 2,
+  };
   private htlcs = new Map<string, StoredHtlc>();
   private currentBlockTimestamp = Math.floor(Date.now() / 1000);
   private currentBlockNumber = 1000;
+  private claimPreimages = new Map<string, string>();
+  private txReceipts = new Map<string, { status: 'success' | 'pending' | 'reverted'; blockNumber: number; txHash: string; swapKey: string; isClaim: boolean }>();
+  private storageDisagreements = new Map<string, { forceStatus?: number }>();
 
   async fundHtlc(
     params: EvmHtlcParams
@@ -113,13 +122,18 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
       throw new Error(`Invalid preimage: computed hash ${computedHash} does not match hashlock ${expectedHash}`);
     }
 
-    this.currentBlockNumber++;
-    const txHash = `0x${createHash('sha256').update(params.swapKey + ':claim:' + this.currentBlockNumber).digest('hex')}`;
+    this.currentBlockNumber += 2;
+    const blockNumber = this.currentBlockNumber - 1;
+    const txHash = `0x${createHash('sha256').update(params.swapKey + ':claim:' + blockNumber).digest('hex')}`;
 
     htlc.completed = true;
     htlc.balance = 0n;
 
-    return { txHash, blockNumber: this.currentBlockNumber, success: true };
+    const rawHex = rawPreimage.toString('hex');
+    this.claimPreimages.set(txHash, rawHex);
+    this.txReceipts.set(txHash, { status: 'success', blockNumber, txHash, swapKey: params.swapKey, isClaim: true });
+
+    return { txHash, blockNumber, success: true };
   }
 
   async refundHtlc(
@@ -145,13 +159,183 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
       );
     }
 
-    this.currentBlockNumber++;
-    const txHash = `0x${createHash('sha256').update(swapKey + ':refund:' + this.currentBlockNumber).digest('hex')}`;
+    this.currentBlockNumber += 2;
+    const blockNumber = this.currentBlockNumber - 1;
+    const txHash = `0x${createHash('sha256').update(swapKey + ':refund:' + blockNumber).digest('hex')}`;
 
     htlc.refunded = true;
     htlc.balance = 0n;
 
-    return { txHash, blockNumber: this.currentBlockNumber, refunded: true };
+    this.txReceipts.set(txHash, { status: 'success', blockNumber, txHash, swapKey, isClaim: false });
+
+    return { txHash, blockNumber, refunded: true };
+  }
+
+  async extractAndVerifyClaimEvidence(params: {
+    claimTxHash: string;
+    expectedHtlcId: string;
+    expectedHashLock: string;
+    expectedClaimAddress: string;
+    expectedAmount: bigint;
+    requiredConfirmations?: number;
+  }): Promise<EvmHtlcClaimedEvidence> {
+    const receipt = this.txReceipts.get(params.claimTxHash);
+    if (!receipt) {
+      throw new Error(`Claim transaction ${params.claimTxHash} not found`);
+    }
+
+    if (receipt.status === 'pending') {
+      return {
+        evidenceType: 'EVM_HTLC_CLAIMED',
+        chainId: this.chainId,
+        contractAddress: '0xfake_htlc',
+        htlcId: params.expectedHtlcId,
+        hashLock: params.expectedHashLock,
+        preimageRevealed: '',
+        claimAddress: params.expectedClaimAddress,
+        amount: params.expectedAmount,
+        txHash: params.claimTxHash,
+        blockNumber: 0,
+        blockTimestamp: this.currentBlockTimestamp,
+        confirmations: 0,
+        finalityState: 'INSUFFICIENT_CONFIRMATIONS',
+        observedAt: new Date(),
+      };
+    }
+
+    if (receipt.status !== 'success') {
+      throw new Error(`Claim transaction failed (status: ${receipt.status})`);
+    }
+
+    const confirmations = this.currentBlockNumber - receipt.blockNumber + 1;
+    const reqConf = params.requiredConfirmations ?? 2;
+    if (confirmations < reqConf) {
+      return {
+        evidenceType: 'EVM_HTLC_CLAIMED',
+        chainId: this.chainId,
+        contractAddress: '0xfake_htlc',
+        htlcId: params.expectedHtlcId,
+        hashLock: params.expectedHashLock,
+        preimageRevealed: this.claimPreimages.get(params.claimTxHash) ?? '',
+        claimAddress: params.expectedClaimAddress,
+        amount: params.expectedAmount,
+        txHash: params.claimTxHash,
+        blockNumber: receipt.blockNumber,
+        blockTimestamp: this.currentBlockTimestamp,
+        confirmations,
+        finalityState: 'INSUFFICIENT_CONFIRMATIONS',
+        observedAt: new Date(),
+      };
+    }
+
+    // Storage check & disagreement check
+    const disagreement = this.storageDisagreements.get(receipt.swapKey);
+    const htlc = this.htlcs.get(receipt.swapKey);
+    if (disagreement?.forceStatus !== undefined ? disagreement.forceStatus !== 2 : !htlc?.completed) {
+      throw new Error(`EVM_FINALITY_DISAGREEMENT: Receipt succeeded but contract storage state is not CLAIMED`);
+    }
+
+    const preimage = this.claimPreimages.get(params.claimTxHash) ?? '';
+    const cleanExpected = params.expectedHashLock.replace(/^0x/, '').toLowerCase();
+    const computedHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex').toLowerCase();
+    if (computedHash !== cleanExpected) {
+      throw new Error(`Revealed preimage hash ${computedHash} does not match expected hashlock ${cleanExpected}`);
+    }
+
+    return {
+      evidenceType: 'EVM_HTLC_CLAIMED',
+      chainId: this.chainId,
+      contractAddress: '0xfake_htlc',
+      htlcId: params.expectedHtlcId,
+      hashLock: params.expectedHashLock,
+      preimageRevealed: preimage,
+      claimAddress: params.expectedClaimAddress,
+      amount: params.expectedAmount,
+      txHash: params.claimTxHash,
+      blockNumber: receipt.blockNumber,
+      blockTimestamp: this.currentBlockTimestamp,
+      confirmations,
+      finalityState: 'FINAL_ENOUGH_FOR_PROTOCOL',
+      observedAt: new Date(),
+    };
+  }
+
+  async verifyRefundEvidence(params: {
+    refundTxHash: string;
+    expectedHtlcId: string;
+    expectedRefundAddress: string;
+    expectedAmount: bigint;
+    requiredConfirmations?: number;
+  }): Promise<EvmHtlcRefundedEvidence> {
+    const receipt = this.txReceipts.get(params.refundTxHash);
+    if (!receipt) {
+      throw new Error(`Refund transaction ${params.refundTxHash} not found`);
+    }
+
+    if (receipt.status === 'pending') {
+      return {
+        evidenceType: 'EVM_HTLC_REFUNDED',
+        chainId: this.chainId,
+        contractAddress: '0xfake_htlc',
+        htlcId: params.expectedHtlcId,
+        swapKey: receipt.swapKey,
+        refundAddress: params.expectedRefundAddress,
+        amount: params.expectedAmount,
+        txHash: params.refundTxHash,
+        blockNumber: 0,
+        blockTimestamp: this.currentBlockTimestamp,
+        confirmations: 0,
+        finalityState: 'INSUFFICIENT_CONFIRMATIONS',
+        observedAt: new Date(),
+      };
+    }
+
+    if (receipt.status !== 'success') {
+      throw new Error(`Refund transaction failed (status: ${receipt.status})`);
+    }
+
+    const confirmations = this.currentBlockNumber - receipt.blockNumber + 1;
+    const reqConf = params.requiredConfirmations ?? 2;
+    if (confirmations < reqConf) {
+      return {
+        evidenceType: 'EVM_HTLC_REFUNDED',
+        chainId: this.chainId,
+        contractAddress: '0xfake_htlc',
+        htlcId: params.expectedHtlcId,
+        swapKey: receipt.swapKey,
+        refundAddress: params.expectedRefundAddress,
+        amount: params.expectedAmount,
+        txHash: params.refundTxHash,
+        blockNumber: receipt.blockNumber,
+        blockTimestamp: this.currentBlockTimestamp,
+        confirmations,
+        finalityState: 'INSUFFICIENT_CONFIRMATIONS',
+        observedAt: new Date(),
+      };
+    }
+
+    // Storage check & disagreement check
+    const disagreement = this.storageDisagreements.get(receipt.swapKey);
+    const htlc = this.htlcs.get(receipt.swapKey);
+    if (disagreement?.forceStatus !== undefined ? disagreement.forceStatus !== 3 : !htlc?.refunded) {
+      throw new Error(`EVM_FINALITY_DISAGREEMENT: Receipt succeeded but contract storage state is not REFUNDED`);
+    }
+
+    return {
+      evidenceType: 'EVM_HTLC_REFUNDED',
+      chainId: this.chainId,
+      contractAddress: '0xfake_htlc',
+      htlcId: params.expectedHtlcId,
+      swapKey: receipt.swapKey,
+      refundAddress: params.expectedRefundAddress,
+      amount: params.expectedAmount,
+      txHash: params.refundTxHash,
+      blockNumber: receipt.blockNumber,
+      blockTimestamp: this.currentBlockTimestamp,
+      confirmations,
+      finalityState: 'FINAL_ENOUGH_FOR_PROTOCOL',
+      observedAt: new Date(),
+    };
   }
 
   async getBlockTimestamp(): Promise<number> {
@@ -159,6 +343,22 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
   }
 
   // --- Test Simulation Methods ---
+
+  simulateTxPending(txHash: string): void {
+    const receipt = this.txReceipts.get(txHash);
+    if (receipt) receipt.status = 'pending';
+  }
+
+  setTxConfirmations(txHash: string, confs: number): void {
+    const receipt = this.txReceipts.get(txHash);
+    if (receipt) {
+      receipt.blockNumber = this.currentBlockNumber - confs + 1;
+    }
+  }
+
+  simulateStorageDisagreement(swapKey: string, forceStatus: number): void {
+    this.storageDisagreements.set(swapKey, { forceStatus });
+  }
 
   setBlockTimestamp(ts: number): void {
     this.currentBlockTimestamp = ts;

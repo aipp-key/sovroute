@@ -66,6 +66,10 @@ export interface RealLocalEvmBackendConfig {
 export class RealLocalEvmAtomicBackend implements IEvmAtomicBackend {
   readonly backendName = 'RealLocalEvmAtomicBackend';
   readonly chainId = ACCEPTED_LOCAL_DEVNET_CHAIN_ID;
+  public readonly finalityPolicy = {
+    policyTag: 'LOCAL_DEVNET_FINALITY_POLICY',
+    requiredConfirmations: 1,
+  };
 
   private publicClient: PublicClient;
   private operatorWallet: WalletClient;

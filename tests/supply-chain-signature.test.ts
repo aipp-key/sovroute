@@ -594,7 +594,7 @@ describe('PHASE 2.2B — STRICT OPENPGP & VERSION-FROZEN TRUST CLOSURE SUITE', (
       (err: Error) => err.message.includes('BINARY_INTEGRITY_VERIFICATION_FAILED')
     );
 
-    rmSync(copyBin, { force: true });
+    try { rmSync(copyBin, { force: true, maxRetries: 3, retryDelay: 100 }); } catch {}
   });
 
   it('18. Modified extracted lnd binary rejected (tamper test)', () => {
@@ -618,7 +618,7 @@ describe('PHASE 2.2B — STRICT OPENPGP & VERSION-FROZEN TRUST CLOSURE SUITE', (
       (err: Error) => err.message.includes('BINARY_INTEGRITY_VERIFICATION_FAILED')
     );
 
-    rmSync(copyBin, { force: true });
+    try { rmSync(copyBin, { force: true, maxRetries: 3, retryDelay: 100 }); } catch {}
   });
 
   it('19. Modified extracted lncli binary rejected (tamper test)', () => {
@@ -642,7 +642,7 @@ describe('PHASE 2.2B — STRICT OPENPGP & VERSION-FROZEN TRUST CLOSURE SUITE', (
       (err: Error) => err.message.includes('BINARY_INTEGRITY_VERIFICATION_FAILED')
     );
 
-    rmSync(copyBin, { force: true });
+    try { rmSync(copyBin, { force: true, maxRetries: 3, retryDelay: 100 }); } catch {}
   });
 
   it('20. StartupVerifier refuses launch if any required binary is missing or tampered', () => {

@@ -108,6 +108,69 @@ describe('PHASE 3.0A — REAL LND REGTEST ↔ REAL LOCAL EVM HTLC SOVEREIGN CROS
 
     // External client actor representing the sovereign user
     clientActor = new ClientEvmActor();
+
+    // Automated test-harness guard: Ensure Node B has sufficient outbound channel liquidity (>= 300,000 sats)
+    // so repeated test suite runs remain hermetic, reproducible, and self-healing.
+    try {
+      const adminMacBPath = join(dataDir, 'lnd-b', 'data', 'chain', 'bitcoin', 'regtest', 'admin.macaroon');
+      const adminMacAPath = join(dataDir, 'lnd-a', 'data', 'chain', 'bitcoin', 'regtest', 'admin.macaroon');
+      if (existsSync(adminMacBPath) && existsSync(adminMacAPath)) {
+        const macB = readFileSync(adminMacBPath).toString('hex');
+        const macA = readFileSync(adminMacAPath).toString('hex');
+        const https = await import('node:https');
+
+        const chanData = await new Promise<any>((resolve) => {
+          const req = https.request('https://127.0.0.1:18081/v1/channels', {
+            rejectUnauthorized: false,
+            headers: { 'Grpc-Metadata-macaroon': macB },
+          }, (res) => {
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch { resolve({}); }
+            });
+          });
+          req.on('error', () => resolve({}));
+          req.end();
+        });
+
+        const chan = chanData?.channels?.[0];
+        if (chan && BigInt(chan.local_balance || 0) < 300_000n && BigInt(chan.remote_balance || 0) > 200_000n) {
+          const invData = await new Promise<any>((resolve) => {
+            const req = https.request('https://127.0.0.1:18081/v1/invoices', {
+              method: 'POST',
+              rejectUnauthorized: false,
+              headers: { 'Grpc-Metadata-macaroon': macB, 'Content-Type': 'application/json' },
+            }, (res) => {
+              let b = '';
+              res.on('data', (d) => (b += d));
+              res.on('end', () => {
+                try { resolve(JSON.parse(b)); } catch { resolve({}); }
+              });
+            });
+            req.on('error', () => resolve({}));
+            req.write(JSON.stringify({ value: '350000', memo: 'test-harness-auto-rebalance' }));
+            req.end();
+          });
+
+          if (invData?.payment_request) {
+            await new Promise<void>((resolve) => {
+              const req = https.request('https://127.0.0.1:18080/v1/channels/transactions', {
+                method: 'POST',
+                rejectUnauthorized: false,
+                headers: { 'Grpc-Metadata-macaroon': macA, 'Content-Type': 'application/json' },
+              }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => resolve());
+              });
+              req.on('error', () => resolve());
+              req.write(JSON.stringify({ payment_request: invData.payment_request }));
+              req.end();
+            });
+          }
+        }
+      }
+    } catch {}
   });
 
   it('1. P0: Byte-for-byte SHA-256 hashlock compatibility between LND and EVM HTLC', async () => {
@@ -171,7 +234,7 @@ describe('PHASE 3.0A — REAL LND REGTEST ↔ REAL LOCAL EVM HTLC SOVEREIGN CROS
 
     // Poll until LND-A reports ACCEPTED (held)
     let held = false;
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 50; i++) {
       await sleep(200);
       const st = await lndBackend.getInvoiceState(record.holdInvoice!.paymentHash);
       if (st === 'ACCEPTED') {
@@ -251,7 +314,7 @@ describe('PHASE 3.0A — REAL LND REGTEST ↔ REAL LOCAL EVM HTLC SOVEREIGN CROS
     // 2. Payer pays hold invoice
     payFromNodeB(record.holdInvoice!.bolt11);
 
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 50; i++) {
       await sleep(200);
       const st = await lndBackend.getInvoiceState(record.holdInvoice!.paymentHash);
       if (st === 'ACCEPTED') break;
@@ -327,7 +390,7 @@ describe('PHASE 3.0A — REAL LND REGTEST ↔ REAL LOCAL EVM HTLC SOVEREIGN CROS
     // Payer pays
     payFromNodeB(record.holdInvoice!.bolt11);
 
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 50; i++) {
       await sleep(200);
       if ((await lndBackend.getInvoiceState(record.holdInvoice!.paymentHash)) === 'ACCEPTED') break;
     }

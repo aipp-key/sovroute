@@ -25,6 +25,12 @@ import {
   type CreateIntentParams,
   type PrepareAttemptParams,
 } from '../atomic/evm/transaction-types.ts';
+import {
+  type SovereignExecutionRecord,
+  SovereignAtomicState,
+  type SovereignSwapTransition,
+  type HoldInvoice,
+} from '../atomic/types.ts';
 
 export interface SqliteDbOptions {
   filename?: string;
@@ -172,6 +178,66 @@ export class SqlitePersistence {
 
       CREATE INDEX IF NOT EXISTS idx_evm_attempts_intent ON evm_transaction_attempts(intent_id);
       CREATE INDEX IF NOT EXISTS idx_evm_attempts_status ON evm_transaction_attempts(status);
+
+      CREATE TABLE IF NOT EXISTS sovereign_swaps (
+        id TEXT PRIMARY KEY,
+        idempotency_key TEXT UNIQUE NOT NULL,
+        hash_lock TEXT UNIQUE NOT NULL,
+        payment_hash TEXT UNIQUE NOT NULL,
+        state TEXT NOT NULL,
+        amount_sats TEXT NOT NULL,
+        expected_usdc_amount TEXT NOT NULL,
+        claiming_address TEXT NOT NULL,
+        target_destination_address TEXT NOT NULL,
+        token_address TEXT NOT NULL,
+        refund_address TEXT NOT NULL,
+        cltv_expiry_blocks INTEGER NOT NULL,
+        timelock_seconds INTEGER NOT NULL,
+        refund_locktime INTEGER,
+        economic_fingerprint TEXT NOT NULL,
+        bolt11 TEXT,
+        lightning_invoice_state TEXT,
+        lightning_held_at TEXT,
+        lightning_settled_at TEXT,
+        lightning_canceled_at TEXT,
+        lightning_expiry_height INTEGER,
+        evm_swap_key TEXT,
+        evm_htlc_id TEXT,
+        evm_funding_tx_hash TEXT,
+        evm_claim_tx_hash TEXT,
+        evm_refund_tx_hash TEXT,
+        destination_tx_hash TEXT,
+        action_in_flight TEXT,
+        action_claimed_by TEXT,
+        action_claimed_at TEXT,
+        action_lease_expires_at TEXT,
+        action_generation INTEGER NOT NULL DEFAULT 0,
+        recovery_required INTEGER NOT NULL DEFAULT 0,
+        failure_reason TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_state ON sovereign_swaps(state);
+      CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_idempotency ON sovereign_swaps(idempotency_key);
+      CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_hash_lock ON sovereign_swaps(hash_lock);
+      CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_payment_hash ON sovereign_swaps(payment_hash);
+      CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_recovery ON sovereign_swaps(recovery_required);
+
+      CREATE TABLE IF NOT EXISTS sovereign_swap_transitions (
+        id TEXT PRIMARY KEY,
+        swap_id TEXT NOT NULL,
+        from_state TEXT,
+        to_state TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        evidence_id TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (swap_id) REFERENCES sovereign_swaps(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sovereign_transitions_swap ON sovereign_swap_transitions(swap_id);
     `);
 
     // Safe additive migrations for existing DB
@@ -183,6 +249,25 @@ export class SqlitePersistence {
 
     try {
       this.db.exec('ALTER TABLE executions ADD COLUMN execution_plan_json TEXT;');
+    } catch {
+      // Column already exists
+    }
+
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN action_generation INTEGER NOT NULL DEFAULT 0;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN lightning_expiry_height INTEGER;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN action_lease_expires_at TEXT;');
     } catch {
       // Column already exists
     }
@@ -1348,6 +1433,387 @@ export class SqlitePersistence {
       recoveryAttempts: Number(row.recovery_attempts || 0),
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
+    };
+  }
+
+  // =========================================================================
+  // SOVEREIGN ATOMIC COORDINATOR PERSISTENCE (PHASE 5B)
+  // =========================================================================
+
+  public createSovereignSwap(
+    record: SovereignExecutionRecord,
+    fingerprint: string
+  ): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO sovereign_swaps (
+        id, idempotency_key, hash_lock, payment_hash, state,
+        amount_sats, expected_usdc_amount, claiming_address, target_destination_address,
+        token_address, refund_address, cltv_expiry_blocks, timelock_seconds, refund_locktime,
+        economic_fingerprint, bolt11, lightning_invoice_state, lightning_held_at,
+        lightning_settled_at, lightning_canceled_at, lightning_expiry_height, evm_swap_key, evm_htlc_id,
+        evm_funding_tx_hash, evm_claim_tx_hash, evm_refund_tx_hash, destination_tx_hash,
+        action_in_flight, action_claimed_by, action_claimed_at, recovery_required,
+        failure_reason, retry_count, created_at, updated_at
+      ) VALUES (
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?
+      )
+    `);
+
+    const nowIso = record.createdAt.toISOString();
+    const updatedIso = record.updatedAt.toISOString();
+
+    stmt.run(
+      record.id,
+      record.idempotencyKey,
+      record.hashLock.toLowerCase(),
+      (record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '')).toLowerCase(),
+      record.state,
+      record.amountSats.toString(),
+      record.expectedUsdcAmount.toString(),
+      record.claimingAddress.toLowerCase(),
+      record.targetDestinationAddress.toLowerCase(),
+      (record.tokenAddress ?? '').toLowerCase(),
+      (record.refundAddress ?? '').toLowerCase(),
+      record.cltvExpiryBlocks ?? 144,
+      record.timelockSeconds ?? 43200,
+      record.refundLocktime ?? null,
+      fingerprint,
+      record.holdInvoice?.bolt11 ?? null,
+      record.holdInvoice?.state ?? null,
+      record.holdInvoice?.acceptedAt?.toISOString() ?? null,
+      record.holdInvoice?.settledAt?.toISOString() ?? null,
+      record.holdInvoice?.canceledAt?.toISOString() ?? null,
+      record.holdInvoice?.expiryHeight ?? null,
+      record.evmSwapKey ?? null,
+      record.evmHtlcId ?? null,
+      record.evmFundingTxHash ?? null,
+      record.evmClaimTxHash ?? null,
+      record.evmRefundTxHash ?? null,
+      record.destinationTxHash ?? null,
+      record.actionInFlight ?? null,
+      record.actionClaimedBy ?? null,
+      record.actionClaimedAt?.toISOString() ?? null,
+      record.recoveryRequired ? 1 : 0,
+      record.failureReason ?? null,
+      record.retryCount ?? 0,
+      nowIso,
+      updatedIso
+    );
+
+    this.recordSovereignTransition(
+      record.id,
+      undefined,
+      record.state,
+      'INITIAL_CREATION',
+      undefined,
+      JSON.stringify({ idempotencyKey: record.idempotencyKey, fingerprint })
+    );
+  }
+
+  public getSovereignSwap(id: string): SovereignExecutionRecord | null {
+    const stmt = this.db.prepare('SELECT * FROM sovereign_swaps WHERE id = ?');
+    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapRowToSovereignRecord(row) : null;
+  }
+
+  public getSovereignSwapByIdempotencyKey(key: string): SovereignExecutionRecord | null {
+    const stmt = this.db.prepare('SELECT * FROM sovereign_swaps WHERE idempotency_key = ?');
+    const row = stmt.get(key) as Record<string, unknown> | undefined;
+    return row ? this.mapRowToSovereignRecord(row) : null;
+  }
+
+  public getSovereignSwapByPaymentHash(paymentHash: string): SovereignExecutionRecord | null {
+    const clean = paymentHash.replace(/^0x/, '').toLowerCase();
+    const stmt = this.db.prepare('SELECT * FROM sovereign_swaps WHERE payment_hash = ?');
+    const row = stmt.get(clean) as Record<string, unknown> | undefined;
+    return row ? this.mapRowToSovereignRecord(row) : null;
+  }
+
+  public listNonTerminalSovereignSwaps(): SovereignExecutionRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM sovereign_swaps
+      WHERE state NOT IN ('COMPLETED', 'REFUNDED', 'INVOICE_CANCELED', 'EXPIRED')
+      ORDER BY created_at ASC
+    `);
+    const rows = stmt.all() as Record<string, unknown>[];
+    return rows.map((r) => this.mapRowToSovereignRecord(r));
+  }
+
+  public updateSovereignSwap(
+    id: string,
+    updates: Partial<SovereignExecutionRecord>,
+    transition?: { reason: string; evidenceId?: string; metadataJson?: string }
+  ): SovereignExecutionRecord {
+    const existing = this.getSovereignSwap(id);
+    if (!existing) {
+      throw new Error(`Sovereign swap ${id} not found for update`);
+    }
+
+    const now = new Date();
+    const updatedRecord: SovereignExecutionRecord = {
+      ...existing,
+      ...updates,
+      updatedAt: now,
+    };
+
+    if (updates.holdInvoice) {
+      updatedRecord.holdInvoice = {
+        ...existing.holdInvoice!,
+        ...updates.holdInvoice,
+      };
+    }
+
+    const setClauses: string[] = ['updated_at = ?'];
+    const values: any[] = [now.toISOString()];
+
+    if (updates.state !== undefined) {
+      setClauses.push('state = ?');
+      values.push(updates.state);
+    }
+    if (updates.holdInvoice?.bolt11 !== undefined) {
+      setClauses.push('bolt11 = ?');
+      values.push(updates.holdInvoice.bolt11);
+    }
+    if (updates.holdInvoice?.state !== undefined) {
+      setClauses.push('lightning_invoice_state = ?');
+      values.push(updates.holdInvoice.state);
+    }
+    if (updates.holdInvoice?.acceptedAt !== undefined) {
+      setClauses.push('lightning_held_at = ?');
+      values.push(updates.holdInvoice.acceptedAt?.toISOString() ?? null);
+    }
+    if (updates.holdInvoice?.settledAt !== undefined) {
+      setClauses.push('lightning_settled_at = ?');
+      values.push(updates.holdInvoice.settledAt?.toISOString() ?? null);
+    }
+    if (updates.holdInvoice?.canceledAt !== undefined) {
+      setClauses.push('lightning_canceled_at = ?');
+      values.push(updates.holdInvoice.canceledAt?.toISOString() ?? null);
+    }
+    if (updates.holdInvoice?.expiryHeight !== undefined) {
+      setClauses.push('lightning_expiry_height = ?');
+      values.push(updates.holdInvoice.expiryHeight ?? null);
+    }
+    if (updates.evmSwapKey !== undefined) {
+      setClauses.push('evm_swap_key = ?');
+      values.push(updates.evmSwapKey);
+    }
+    if (updates.evmHtlcId !== undefined) {
+      setClauses.push('evm_htlc_id = ?');
+      values.push(updates.evmHtlcId);
+    }
+    if (updates.evmFundingTxHash !== undefined) {
+      setClauses.push('evm_funding_tx_hash = ?');
+      values.push(updates.evmFundingTxHash);
+    }
+    if (updates.evmClaimTxHash !== undefined) {
+      setClauses.push('evm_claim_tx_hash = ?');
+      values.push(updates.evmClaimTxHash);
+    }
+    if (updates.evmRefundTxHash !== undefined) {
+      setClauses.push('evm_refund_tx_hash = ?');
+      values.push(updates.evmRefundTxHash);
+    }
+    if (updates.destinationTxHash !== undefined) {
+      setClauses.push('destination_tx_hash = ?');
+      values.push(updates.destinationTxHash);
+    }
+    if (updates.refundLocktime !== undefined) {
+      setClauses.push('refund_locktime = ?');
+      values.push(updates.refundLocktime);
+    }
+    if ('actionInFlight' in updates) {
+      setClauses.push('action_in_flight = ?');
+      values.push(updates.actionInFlight ?? null);
+    }
+    if ('actionClaimedBy' in updates) {
+      setClauses.push('action_claimed_by = ?');
+      values.push(updates.actionClaimedBy ?? null);
+    }
+    if ('actionClaimedAt' in updates) {
+      setClauses.push('action_claimed_at = ?');
+      values.push(updates.actionClaimedAt?.toISOString() ?? null);
+    }
+    if (updates.recoveryRequired !== undefined) {
+      setClauses.push('recovery_required = ?');
+      values.push(updates.recoveryRequired ? 1 : 0);
+    }
+    if (updates.failureReason !== undefined) {
+      setClauses.push('failure_reason = ?');
+      values.push(updates.failureReason);
+    }
+    if (updates.retryCount !== undefined) {
+      setClauses.push('retry_count = ?');
+      values.push(updates.retryCount);
+    }
+
+    values.push(id);
+    const sql = `UPDATE sovereign_swaps SET ${setClauses.join(', ')} WHERE id = ?`;
+    this.db.prepare(sql).run(...values);
+
+    if (transition && updates.state && updates.state !== existing.state) {
+      this.recordSovereignTransition(
+        id,
+        existing.state,
+        updates.state,
+        transition.reason,
+        transition.evidenceId,
+        transition.metadataJson
+      );
+    }
+
+    return updatedRecord;
+  }
+
+  public claimSovereignAction(
+    id: string,
+    action: string,
+    workerId: string,
+    leaseMs: number = 60000
+  ): boolean {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
+
+    const stmt = this.db.prepare(`
+      UPDATE sovereign_swaps
+      SET action_in_flight = ?,
+          action_claimed_by = ?,
+          action_claimed_at = ?,
+          action_lease_expires_at = ?,
+          action_generation = action_generation + 1,
+          updated_at = ?
+      WHERE id = ?
+        AND (
+          action_in_flight IS NULL
+          OR action_claimed_by = ?
+          OR action_lease_expires_at < ?
+        )
+    `);
+
+    const result = stmt.run(action, workerId, nowIso, leaseExpiresAt, nowIso, id, workerId, nowIso);
+    return result.changes === 1;
+  }
+
+  public releaseSovereignAction(id: string, workerId?: string): void {
+    const nowIso = new Date().toISOString();
+    let sql = `
+      UPDATE sovereign_swaps
+      SET action_in_flight = NULL,
+          action_claimed_by = NULL,
+          action_claimed_at = NULL,
+          action_lease_expires_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+    `;
+    const params: any[] = [nowIso, id];
+    if (workerId) {
+      sql += ' AND action_claimed_by = ?';
+      params.push(workerId);
+    }
+    this.db.prepare(sql).run(...params);
+  }
+
+  public recordSovereignTransition(
+    swapId: string,
+    fromState: SovereignAtomicState | undefined,
+    toState: SovereignAtomicState,
+    reason: string,
+    evidenceId?: string,
+    metadataJson?: string
+  ): void {
+    const id = randomUUID();
+    const stmt = this.db.prepare(`
+      INSERT INTO sovereign_swap_transitions (
+        id, swap_id, from_state, to_state, reason, evidence_id, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      id,
+      swapId,
+      fromState ?? null,
+      toState,
+      reason,
+      evidenceId ?? null,
+      metadataJson ?? null,
+      new Date().toISOString()
+    );
+  }
+
+  public getSovereignTransitions(swapId: string): SovereignSwapTransition[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM sovereign_swap_transitions
+      WHERE swap_id = ?
+      ORDER BY created_at ASC
+    `);
+    const rows = stmt.all(swapId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as string,
+      swapId: r.swap_id as string,
+      fromState: (r.from_state as SovereignAtomicState) || undefined,
+      toState: r.to_state as SovereignAtomicState,
+      reason: r.reason as string,
+      evidenceId: (r.evidence_id as string) || undefined,
+      metadataJson: (r.metadata_json as string) || undefined,
+      createdAt: new Date(r.created_at as string),
+    }));
+  }
+
+  private mapRowToSovereignRecord(row: Record<string, unknown>): SovereignExecutionRecord {
+    let holdInvoice: HoldInvoice | undefined;
+    if (row.bolt11) {
+      holdInvoice = {
+        paymentHash: (row.payment_hash as string) || (row.hash_lock as string).replace(/^0x/, ''),
+        bolt11: row.bolt11 as string,
+        amountSats: BigInt(row.amount_sats as string),
+        cltvExpiryBlocks: Number(row.cltv_expiry_blocks || 144),
+        expiryHeight: row.lightning_expiry_height ? Number(row.lightning_expiry_height) : undefined,
+        state: (row.lightning_invoice_state as any) || 'OPEN',
+        createdAt: new Date(row.created_at as string),
+        acceptedAt: row.lightning_held_at ? new Date(row.lightning_held_at as string) : undefined,
+        settledAt: row.lightning_settled_at ? new Date(row.lightning_settled_at as string) : undefined,
+        canceledAt: row.lightning_canceled_at ? new Date(row.lightning_canceled_at as string) : undefined,
+      };
+    }
+
+    return {
+      id: row.id as string,
+      idempotencyKey: row.idempotency_key as string,
+      hashLock: row.hash_lock as string,
+      claimingAddress: row.claiming_address as string,
+      targetDestinationAddress: row.target_destination_address as string,
+      amountSats: BigInt(row.amount_sats as string),
+      expectedUsdcAmount: BigInt(row.expected_usdc_amount as string),
+      state: row.state as SovereignAtomicState,
+      holdInvoice,
+      evmSwapKey: (row.evm_swap_key as string) || undefined,
+      evmHtlcId: (row.evm_htlc_id as string) || undefined,
+      evmFundingTxHash: (row.evm_funding_tx_hash as string) || undefined,
+      evmClaimTxHash: (row.evm_claim_tx_hash as string) || undefined,
+      evmRefundTxHash: (row.evm_refund_tx_hash as string) || undefined,
+      destinationTxHash: (row.destination_tx_hash as string) || undefined,
+      tokenAddress: (row.token_address as string) || undefined,
+      refundAddress: (row.refund_address as string) || undefined,
+      cltvExpiryBlocks: row.cltv_expiry_blocks ? Number(row.cltv_expiry_blocks) : undefined,
+      timelockSeconds: row.timelock_seconds ? Number(row.timelock_seconds) : undefined,
+      refundLocktime: row.refund_locktime ? Number(row.refund_locktime) : undefined,
+      economicFingerprint: (row.economic_fingerprint as string) || undefined,
+      actionInFlight: (row.action_in_flight as string) || undefined,
+      actionClaimedBy: (row.action_claimed_by as string) || undefined,
+      actionClaimedAt: row.action_claimed_at ? new Date(row.action_claimed_at as string) : undefined,
+      actionGeneration: row.action_generation !== undefined && row.action_generation !== null ? Number(row.action_generation) : undefined,
+      recoveryRequired: Number(row.recovery_required || 0) === 1,
+      failureReason: (row.failure_reason as string) || undefined,
+      retryCount: Number(row.retry_count || 0),
+      createdAt: new Date(row.created_at as string),
+      updatedAt: new Date(row.updated_at as string),
     };
   }
 }

@@ -41,7 +41,8 @@ export interface EvmHtlcFundedEvidence {
 export type EvmClaimFinalityState =
   | 'EVM_CLAIM_DETECTED'
   | 'EVM_CLAIM_CONFIRMED'
-  | 'FINAL_ENOUGH_FOR_PROTOCOL';
+  | 'FINAL_ENOUGH_FOR_PROTOCOL'
+  | 'INSUFFICIENT_CONFIRMATIONS';
 
 export interface EvmHtlcClaimedEvidence {
   readonly evidenceType: 'EVM_HTLC_CLAIMED';
@@ -65,11 +66,15 @@ export interface EvmHtlcRefundedEvidence {
   readonly chainId: number;
   readonly contractAddress: string;
   readonly htlcId: string;
-  readonly hashLock: HashLock;
+  readonly swapKey?: string | undefined;
+  readonly hashLock?: HashLock | undefined;
   readonly refundAddress: string;
+  readonly amount?: bigint | undefined;
   readonly txHash: string;
   readonly blockNumber: number;
   readonly blockTimestamp: number;
+  readonly confirmations?: number | undefined;
+  readonly finalityState?: EvmClaimFinalityState | undefined;
   readonly observedAt: Date;
 }
 

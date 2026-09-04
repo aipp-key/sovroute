@@ -86,6 +86,10 @@ export interface BaseSepoliaBackendConfig {
 export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
   readonly backendName = 'BaseSepoliaAtomicBackend';
   readonly chainId = BASE_SEPOLIA_CHAIN_ID;
+  public readonly finalityPolicy = {
+    policyTag: 'BASE_SEPOLIA_TEST_POLICY',
+    requiredConfirmations: 2,
+  };
 
   private publicClient: any;
   private operatorWallet: WalletClient | undefined;

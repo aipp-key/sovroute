@@ -224,9 +224,9 @@ describe('PHASE 4 — REAL LND REGTEST ↔ LIVE BASE SEPOLIA TEST USDC ATOMIC RO
     });
     console.log('Client Claim Tx Hash:', claimTxHash);
 
-    const claimReceipt = await publicClient.waitForTransactionReceipt({ hash: claimTxHash });
+    const claimReceipt = await publicClient.waitForTransactionReceipt({ hash: claimTxHash, confirmations: 2 });
     assert.equal(claimReceipt.status, 'success');
-    console.log('Claim successfully mined in Base Sepolia block:', claimReceipt.blockNumber.toString());
+    console.log('Claim successfully mined with 2 confirmations in Base Sepolia block:', claimReceipt.blockNumber.toString());
 
     // 7. P0 SETTLEMENT GATE: Router observes confirmed claim on Base Sepolia,
     // extracts S from verified public evidence, rechecks CLTV safety, and settles LND

@@ -58,6 +58,7 @@ export interface HoldInvoice {
   bolt11: string;
   amountSats: bigint;
   cltvExpiryBlocks: number;
+  expiryHeight?: number | undefined;
   state: HoldInvoiceState;
   createdAt: Date;
   acceptedAt?: Date | undefined;
@@ -86,6 +87,8 @@ export interface ILightningAtomicBackend {
   ): Promise<{ canceled: boolean; canceledAt: Date }>;
 
   getInvoiceState(paymentHash: PaymentHash): Promise<HoldInvoiceState>;
+
+  getBlockHeight?(): Promise<number>;
 }
 
 export interface EvmHtlcParams {
@@ -107,6 +110,9 @@ export interface EvmHtlcState {
   timelock: number;
   blockTimestamp: number;
 }
+
+import type { EvmHtlcClaimedEvidence, EvmHtlcRefundedEvidence } from './evm/evm-types.ts';
+export type { EvmHtlcClaimedEvidence, EvmHtlcRefundedEvidence };
 
 export interface IEvmAtomicBackend {
   readonly backendName: string;
@@ -132,6 +138,14 @@ export interface IEvmAtomicBackend {
     expectedAmount: bigint;
     requiredConfirmations?: number;
   }): Promise<any>;
+
+  verifyRefundEvidence?(params: {
+    refundTxHash: string;
+    expectedHtlcId: string;
+    expectedRefundAddress: string;
+    expectedAmount: bigint;
+    requiredConfirmations?: number;
+  }): Promise<EvmHtlcRefundedEvidence>;
 
   refundHtlc(swapKey: string): Promise<{ txHash: string; blockNumber: number; refunded: boolean }>;
 
@@ -160,6 +174,7 @@ export const SovereignAtomicState = {
   CLAIMING: 'CLAIMING',
   EVM_CLAIM_DETECTED: 'EVM_CLAIM_DETECTED',
   EVM_CLAIM_CONFIRMED: 'EVM_CLAIM_CONFIRMED',
+  LIGHTNING_SETTLEMENT_PENDING: 'LIGHTNING_SETTLEMENT_PENDING',
   LIGHTNING_SETTLED: 'LIGHTNING_SETTLED',
   DESTINATION_PENDING: 'DESTINATION_PENDING',
   COMPLETED: 'COMPLETED',
@@ -168,6 +183,9 @@ export const SovereignAtomicState = {
   EXPIRED: 'EXPIRED',
   INVOICE_CANCELED: 'INVOICE_CANCELED',
   REFUND_ELIGIBLE: 'REFUND_ELIGIBLE',
+  EVM_REFUND_PENDING: 'EVM_REFUND_PENDING',
+  EVM_REFUND_CONFIRMED: 'EVM_REFUND_CONFIRMED',
+  LIGHTNING_CANCEL_PENDING: 'LIGHTNING_CANCEL_PENDING',
   REFUNDED: 'REFUNDED',
   RECOVERY_REQUIRED: 'RECOVERY_REQUIRED',
   MANUAL_REVIEW: 'MANUAL_REVIEW',
@@ -189,7 +207,32 @@ export interface SovereignExecutionRecord {
   evmHtlcId?: string | undefined;
   evmFundingTxHash?: string | undefined;
   evmClaimTxHash?: string | undefined;
+  evmRefundTxHash?: string | undefined;
   destinationTxHash?: string | undefined;
+  tokenAddress?: string | undefined;
+  refundAddress?: string | undefined;
+  cltvExpiryBlocks?: number | undefined;
+  timelockSeconds?: number | undefined;
+  refundLocktime?: number | undefined;
+  economicFingerprint?: string | undefined;
+  actionInFlight?: string | undefined;
+  actionClaimedBy?: string | undefined;
+  actionClaimedAt?: Date | undefined;
+  actionGeneration?: number | undefined;
+  recoveryRequired?: boolean | undefined;
+  failureReason?: string | undefined;
+  retryCount?: number | undefined;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface SovereignSwapTransition {
+  id: string;
+  swapId: string;
+  fromState?: SovereignAtomicState | undefined;
+  toState: SovereignAtomicState;
+  reason: string;
+  evidenceId?: string | undefined;
+  metadataJson?: string | undefined;
+  createdAt: Date;
 }

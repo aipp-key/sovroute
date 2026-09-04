@@ -20,6 +20,23 @@ export class FakeLightningAtomicBackend implements ILightningAtomicBackend {
   readonly backendName = 'FakeLightningAtomicBackend';
   private invoices = new Map<PaymentHash, HoldInvoice>();
   private hashLocks = new Map<PaymentHash, HashLock>();
+  private currentBlockHeight: number = 800000;
+  private failGetBlockHeight: boolean = false;
+
+  async getBlockHeight(): Promise<number> {
+    if (this.failGetBlockHeight) {
+      throw new Error('BITCOIN_RPC_UNAVAILABLE: Authoritative Bitcoin block height unavailable');
+    }
+    return this.currentBlockHeight;
+  }
+
+  setFailGetBlockHeight(fail: boolean): void {
+    this.failGetBlockHeight = fail;
+  }
+
+  setBlockHeight(height: number): void {
+    this.currentBlockHeight = height;
+  }
 
   async createHoldInvoice(
     hashLock: HashLock,
@@ -38,6 +55,7 @@ export class FakeLightningAtomicBackend implements ILightningAtomicBackend {
       bolt11: `lnbc${amountSats}n1fake_bolt11_invoice_${paymentHash.slice(0, 16)}`,
       amountSats,
       cltvExpiryBlocks,
+      expiryHeight: this.currentBlockHeight + cltvExpiryBlocks,
       state: 'OPEN',
       createdAt: new Date(),
     };
@@ -116,7 +134,7 @@ export class FakeLightningAtomicBackend implements ILightningAtomicBackend {
 
   // --- Test Simulation Methods ---
 
-  simulatePayerHold(paymentHash: PaymentHash): void {
+  simulatePayerHold(paymentHash: PaymentHash, expiryHeight?: number): void {
     const invoice = this.invoices.get(paymentHash.toLowerCase());
     if (!invoice) throw new Error(`Invoice not found: ${paymentHash}`);
     if (invoice.state !== 'OPEN') {
@@ -124,5 +142,8 @@ export class FakeLightningAtomicBackend implements ILightningAtomicBackend {
     }
     invoice.state = 'ACCEPTED';
     invoice.acceptedAt = new Date();
+    if (expiryHeight !== undefined) {
+      invoice.expiryHeight = expiryHeight;
+    }
   }
 }
