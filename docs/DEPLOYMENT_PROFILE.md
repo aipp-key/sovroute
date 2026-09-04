@@ -6,7 +6,7 @@ This document specifies the operational runtime contract, environment schema, pe
 ---
 
 ### 1. Runtime Environment Contract
-- **Node.js**: `v22.x LTS` (strictly `>= 22.4.0` for native `node:sqlite` and ESM module support).
+- **Node.js**: Node.js 24 LTS. Certified V1 Core runtime: `v24.12.0` (strictly `>= 24.12.0` for native `node:sqlite` and ESM module support).
 - **TypeScript**: Pinned to repository devDependencies (`7.0.2`).
 - **Operating System**: Linux (Ubuntu 22.04 / 24.04 LTS, Debian 12) or Windows Server (for developer/parity).
 - **Process Manager**: Systemd or minimal container supervisor respecting `SIGTERM` / `SIGINT`.
