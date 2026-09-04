@@ -3,8 +3,8 @@
 ```
 Status: ACTIVE DEVELOPMENT
 Canonical Document: YES (Living Project Memory & Master State)
-Last Verified: 2026-09-04T21:27:05Z (UTC) / 2026-09-05T00:27:05+03:00 (Server Local)
-Last Updated: 2026-09-05T00:35:00+03:00
+Last Verified: 2026-09-04T22:13:16Z (UTC) / 2026-09-05T01:13:16+03:00 (Server Local)
+Last Updated: 2026-09-05T01:15:00+03:00
 Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
 Repository HEAD: Advances via documentation-only commits
 Current Phase: Waiting for Phase 2D Eligibility (Bitcoin Core IBD Completion)
@@ -235,9 +235,10 @@ The project provides an atomic cross-rail execution engine, a durable state coor
   - `prune=55000` (Automatic chain pruning, target ~55 GB).
   - `dbcache=2048` (2048 MiB memory cache).
   - `disablewallet=1` (No wallet capability compiled/enabled).
-  - `listen=0` (Inbound Bitcoin P2P disabled).
-  - `networkactive=0` (Persistent offline safety guard; activated at runtime).
+  - `listen=0` (Inbound Bitcoin P2P disabled; 0 host listeners).
+  - `networkactive=1` (Outbound-only mainnet P2P IBD active).
   - `rpcbind=127.0.0.1`, `rpcallowip=127.0.0.1` (Local RPC only; Phase 2G will rebind to `sovereign_chain_net`).
+  - `rpcauth=sovereign-lnd:<salt>$<hash>` (Hashed HMAC-SHA256 authentication configured; password in `/srv/sovereign-router/secrets/bitcoind_rpc_password` mode `0400`).
 - **Ports Published**: **0 ports published**. `docker port sovereign-bitcoind` returns empty.
 
 ---
@@ -245,14 +246,14 @@ The project provides an atomic cross-rail execution engine, a durable state coor
 ## 11. CURRENT IBD STATE (LIVE SNAPSHOT)
 
 ```
-SNAPSHOT TIMESTAMP: 2026-09-04T21:27:05Z (UTC)
+SNAPSHOT TIMESTAMP: 2026-09-04T22:13:16Z (UTC) / 2026-09-05T01:13:16+03:00 (Server Local)
 Chain: main
 InitialBlockDownload: true (In Progress)
-Current Blocks: 395,848
-Current Headers: 965,524
-Verification Progress: 0.07609 (7.61%)
-Best Block Hash: 000000000000000000237bbe21d318dad90354adc2e9522854671aa82e7e4c6e
-Difficulty: 120,033,340,651.237
+Current Blocks: 440,135
+Current Headers: 965,529
+Verification Progress: 0.12308 (12.31%)
+Best Block Hash: 0000000000000000002fc6f0fbdb048b9fda9c88
+Chainwork: 0000000000000000000000000000000000000000002fc6f0fbdb048b9fda9c88
 Pruned: true (Automatic Pruning Active, pruneheight: 383,915)
 Size on Disk: 8,542,791,033 bytes (~8.54 GB)
 Total Data Dir Size: 11 GB (/srv/sovereign-router/bitcoin/data)
@@ -527,6 +528,38 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
 - **Owner Approval Required**: NONE at this moment.
 - **Exact Git HEAD**: `357c5ab85344a2fa5602a5e376efc7ea80685498`.
 - **Production Mutation**: **NO**.
+- **Real Funds Touched**: **NO**.
+
+### 2026-09-05 01:15 +03:00 (Bitcoin RPC Credential Rotation & Incident Remediation)
+- **Session Objective**: Safely rotate Bitcoin Core RPC credentials following exposure of an unconfigured plaintext parameter during an interactive CLI command, sanitize local artifacts, verify zero Git leaks, and validate production security posture.
+- **Exposure Surface Audit**:
+  - Full scan across repository code, tests, and documentation (`docs/`, `src/`, `tests/`): **0 matches** (CLEAN).
+  - Git commit history across all branches: **0 matches** (CLEAN).
+  - GitHub remote repository (`aipp-key/universal-agent-asset-router`): **0 matches** (CLEAN).
+  - PowerShell console history: **0 matches** (CLEAN).
+  - Scratch scripts: One temporary audit script contained search target; sanitized immediately. Zero plaintext secrets remain.
+- **Rotation Executed**:
+  - Generated new high-entropy 32-character secret directly on `aliasdesk-server` via cryptographically secure generator.
+  - Calculated HMAC-SHA256 salt and hash using Bitcoin Core's approved `rpcauth.py` algorithm.
+  - Updated `/srv/sovereign-router/bitcoin/config/bitcoin.conf` with `rpcauth=sovereign-lnd:<salt>$<hash>` (permissions `0600`, owner `2101:2101`).
+  - Stored plaintext secret strictly on host at `/srv/sovereign-router/secrets/bitcoind_rpc_password` (permissions `0400`, owner `root:root`).
+  - Zero plaintext secrets logged, printed, or committed.
+- **Production Verification**:
+  - `sovereign-bitcoind` gracefully restarted; block index loaded; container reported `Health=healthy`.
+  - Validated cookie authentication inside container (`bitcoin-cli -conf=/config/bitcoin.conf -datadir=/data getblockchaininfo`).
+  - Validated new RPC credentials via stdin pipe (`-stdin -stdinrpcpass`).
+  - Verified arbitrary/wrong credentials are unequivocally rejected with `Authorization failed`.
+  - Mainnet IBD actively progressing: block `440,135` (verification progress `12.31%`, headers `965,529`).
+  - Outbound-only connectivity confirmed: `connections_in: 0`, `connections_out: 10`, `listen=0`, `networkactive=1`.
+  - Port security verified: `ss -lntup` confirms 0 listeners on ports 8332, 8333, 28332, 28333. Docker port mappings: 0.
+  - Container hardening intact: `read_only: true`, `cap_drop: ALL`, `no-new-privileges: true`, `disablewallet: 1`.
+  - AIPP containers untouched: 5/5 running with `Restarts=0`.
+  - LND not installed; Router not started; Real funds: ZERO.
+- **Result**: **PASS — BITCOIN RPC CREDENTIAL ROTATED & ZERO LEAKS CONFIRMED**.
+- **Current Blocker**: Bitcoin Core Initial Block Download (IBD) in progress (~12.3%).
+- **Next Safe Action**: Allow IBD to finish uninterrupted until `initialblockdownload=false` for Phase 2D certification.
+- **Exact Git HEAD**: Advances via documentation-only commit.
+- **Production Mutation**: Replaced bitcoind RPC credential & restarted `sovereign-bitcoind`; no application code altered.
 - **Real Funds Touched**: **NO**.
 
 ---
