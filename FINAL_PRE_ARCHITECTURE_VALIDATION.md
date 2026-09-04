@@ -3,6 +3,10 @@
 **Date**: 2026-09-03  
 **Status**: READ-ONLY EVIDENCE AUDIT COMPLETE  
 
+> [!NOTE]
+> **HISTORICAL / SUPERSEDED RESEARCH — NOT CURRENT V4 EXECUTION ARCHITECTURE**  
+> This document records the pre-architecture validation audit of earlier third-party routes. The active architecture uses the sovereign Direct Base canonical USDC HTLC route (`ARCHITECTURE_V4_SOVEREIGN_CORE.md`).
+
 ---
 
 ## 1. EXECUTIVE VERDICT

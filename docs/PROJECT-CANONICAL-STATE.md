@@ -293,6 +293,19 @@ The Universal Agent Asset Router V1 Core is officially frozen at commit [`357c5a
 - **Production Readiness & Certification (`tests/`)**:
   - Certified under Phase 5a (Base reliability), Phase 5b (Coordinator recovery), Phase 6 (Adversarial failure certification), and Phase 7 (Production freeze).
 
+### Authoritative V4 Customer Execution Route: Direct Base Route
+The authoritative frozen V4 execution path is:
+$$\mathbf{BTC\ (Lightning\ Hold\ Invoice)\ \longleftrightarrow\ Canonical\ USDC\ (Base\ L2\ HtlcErc20)}$$
+
+- **Direct Base**: Customer EVM leg executes directly on Base L2 (`contracts/HtlcErc20.sol`, deployed on Base Sepolia at `0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f` / Base Mainnet).
+- **No Arbitrum**: Zero Arbitrum dependencies in the customer path.
+- **No tBTC**: Settlement asset is canonical native Circle USDC on Base (`0x036CbD53842c5426634e7929541eC2318f3dCF7e` on Sepolia / `0x833589fCD6edb6E08f4c7C32D4f71b54bdA02913` on Mainnet).
+- **No Synchronous CCTP**: Zero cross-chain bridge calls in the customer swap path.
+- **No Synchronous DEX**: Swaps settle directly against operator inventory; zero pool liquidity or slippage dependencies.
+- **Operator Inventory**: Canonical native USDC held directly on Base.
+- **Treasury Plane**: CCTP and DEX belong strictly to decoupled asynchronous treasury operations (inventory replenishment, rebalancing, hedging) and are never in the customer atomic swap path.
+- **External Adapters**: Hosted swap providers (FixedFloat, SideShift) are optional, isolated, disabled-by-default plugins.
+
 ---
 
 ## 13. LND FINAL ARCHITECTURE (PHASE 2C FROZEN DESIGN)
@@ -560,6 +573,23 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
 - **Next Safe Action**: Allow IBD to finish uninterrupted until `initialblockdownload=false` for Phase 2D certification.
 - **Exact Git HEAD**: Advances via documentation-only commit.
 - **Production Mutation**: Replaced bitcoind RPC credential & restarted `sovereign-bitcoind`; no application code altered.
+- **Real Funds Touched**: **NO**.
+
+### 2026-09-05 01:25 +03:00 (Documentation Reconciliation — V4 Direct Base Route)
+- **Session Objective**: Reconcile internal documentation drift inside the frozen V4 repository baseline, aligning all active documentation with the proven Direct Base route (`DIRECT_BASE_USDC_ROUTE_REPORT.md` / commit `3dd610d`), while preserving historical research documents.
+- **Source Code Verification**: Zero application code changed. Verified frozen Router V1 baseline (`357c5ab85344a2fa5602a5e376efc7ea80685498`). Read-only inspection of `src/atomic/coordinator/`, `src/atomic/evm/`, `contracts/HtlcErc20.sol`, and `deployments/base-sepolia.json` confirmed that application source strictly implements Direct Base canonical USDC HTLC execution.
+- **Documentation Reconciled**:
+  - `README.md`: Replaced obsolete Arbitrum/tBTC/CCTP multi-hop route with Direct Base atomic route. Updated runtime to certified Node 24 LTS and test count to 155 offline unit tests.
+  - `ARCHITECTURE_V4_SOVEREIGN_CORE.md`: Reconciled all sections (Trust Boundaries, Operator Key Boundary, Atomic Swap Boundary, EVM Backend, Atomic Coordinator, Evidence Model, Finality, Liquidity Abstraction, Roadmap, and Phase 3 specifications) to the Direct Base canonical USDC HTLC architecture. Formalized decoupling of the Customer Execution Plane from the Asynchronous Treasury Plane (CCTP/DEX).
+  - `SECURITY_MODEL_V1.md`: Contextual threat models (T-04, T-06, T-07, T-17, T-19, Section 2 diagram, Operator Key Inventory, Chain Finality, Dependency Classification, and Residual Risks) reconciled to Base and decoupled treasury. All 25 frozen security invariants (`SEC-1` through `SEC-25`) preserved untouched.
+  - `docs/PROJECT-CANONICAL-STATE.md`: Added explicit authoritative execution path section and updated session log.
+  - Historical documents (`SOVEREIGN_CORE_REBASE_REPORT.md`, `SATORA_LIVE_FEASIBILITY_VALIDATION.md`, `SATORA_SELF_HOST_GAP_ANALYSIS.md`, `FINAL_GARDEN_BASE_ROUTE_VALIDATION.md`, `FINAL_PRE_ARCHITECTURE_VALIDATION.md`): Added clear historical status banners; preserved engineering history without deletion.
+- **Verification**: `npm run typecheck` passed (0 errors); `python tests/scan-secrets.py` passed (0 secrets); `npm test` passed (155/155 tests). Zero git diff in `src/`, `contracts/`, or `tests/`.
+- **Result**: **PASS — DOCUMENTATION 100% RECONCILED WITH DIRECT BASE V4**.
+- **Current Blocker**: Bitcoin Core Initial Block Download (IBD) in progress (~12.3%).
+- **Next Safe Action**: Allow IBD to finish uninterrupted until `initialblockdownload=false` for Phase 2D certification.
+- **Exact Git HEAD**: Advances via documentation-only commit.
+- **Production Mutation**: **NO** (Server untouched, IBD running, AIPP running with 0 restarts).
 - **Real Funds Touched**: **NO**.
 
 ---

@@ -4,6 +4,10 @@
 **Date**: 2026-09-03  
 **Status**: COMPLETE, VERIFIED & PASSING (Zero Real Money Moved)  
 
+> [!NOTE]
+> **HISTORICAL PHASE REPORT — SUPERSEDED BY DIRECT BASE V4 (PHASE 4)**  
+> This report records the initial Architecture V4 Sovereign Core rebase as of September 3, 2026. The initial route was subsequently finalized and frozen as the Direct Base canonical USDC HTLC route (Phase 4 / `DIRECT_BASE_USDC_ROUTE_REPORT.md`), superseding intermediate Arbitrum/CCTP execution concepts.
+
 ---
 
 ## 1. EXECUTIVE SUMMARY

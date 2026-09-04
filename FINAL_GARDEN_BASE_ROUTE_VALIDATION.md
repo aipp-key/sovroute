@@ -4,6 +4,10 @@
 **Target Route Evaluated**:  
 $$\text{Lightning BTC} \xrightarrow[\text{splice-out}]{\text{phoenixd}} \text{native BTC} \xrightarrow[\text{HTLC}]{\text{Garden}} \text{cbBTC (Base)} \xrightarrow[\text{DEX}]{\text{Uniswap / Aerodrome}} \text{canonical USDC (Base)}$$
 
+> [!NOTE]
+> **HISTORICAL / SUPERSEDED RESEARCH — NOT CURRENT V4 EXECUTION ARCHITECTURE**  
+> This document records research into Garden protocol and DEX bridging. The active architecture uses the sovereign Direct Base canonical USDC HTLC route (`ARCHITECTURE_V4_SOVEREIGN_CORE.md`).
+
 ---
 
 ## 1. EXECUTIVE VERDICT

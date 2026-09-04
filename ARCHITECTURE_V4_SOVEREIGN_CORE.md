@@ -97,16 +97,16 @@ As defined in `SECURITY_MODEL_V1.md`:
 2. **Router Core**: High integrity. Executes planning, persistence, and verification. Holds zero user keys.
 3. **Atomic Coordinator**: Enforces mutual exclusivity of claim vs. refund. Binds both legs to identical hashlocks.
 4. **Lightning Backend**: Manages LND hold invoices.
-5. **EVM Backend & Relayer**: Submits smart contract calls (`HTLCErc20`, `HTLCCoordinator`).
-6. **Smart Contracts**: Immutable on-chain enforcement.
+5. **EVM Backend & Relayer**: Submits smart contract calls (`HtlcErc20`).
+6. **Smart Contracts**: Immutable on-chain enforcement (`contracts/HtlcErc20.sol`).
 
 ---
 
 ## 7. USER CUSTODY BOUNDARY (FROZEN)
 
 * **SEC-1 & SEC-2**: Router NEVER stores user private keys or user seed phrases.
-* **Client Autonomy**: The client generates the 32-byte secret $S$ and signs claim digests locally. The Router acts as a non-custodial coordinator and gasless relayer.
-* **Unilateral Recovery**: If the Router permanently shuts down while an execution is in-flight, the user can claim or refund directly on-chain using open-source recovery tools (`doomsday`) without Router cooperation.
+* **Client Autonomy**: The client generates the 32-byte secret $S$ and claims directly on Base. The Router acts as a non-custodial coordinator and gasless relayer.
+* **Unilateral Recovery**: If the Router permanently shuts down while an execution is in-flight, the user can claim or refund directly on-chain using open-source recovery tools without Router cooperation.
 
 ---
 
@@ -114,8 +114,8 @@ As defined in `SECURITY_MODEL_V1.md`:
 
 Operator keys are segregated by function:
 1. **Lightning Node Macaroon**: Scoped exclusively to hold-invoice creation and settlement.
-2. **EVM Relayer Key**: Holds micro-balances of ETH for gas sponsorship. Cannot divert output tokens due to on-chain `callsHash` and `destination` checks.
-3. **Operator Inventory Key**: Funds `HTLCErc20` counterparty collateral on Arbitrum.
+2. **EVM Relayer Key**: Holds micro-balances of ETH on Base for gas sponsorship. Cannot divert output tokens because the smart contract strictly transfers claimed tokens to the immutable `claimAddress`.
+3. **Operator Inventory Key**: Holds and funds `HtlcErc20` counterparty collateral directly on Base with canonical native Circle USDC.
 
 *Compromise of operator keys cannot lead to theft of user funds in flight.*
 
@@ -123,17 +123,20 @@ Operator keys are segregated by function:
 
 ## 9. ATOMIC SWAP BOUNDARY
 
-The system explicitly decouples the atomic swap from downstream bridging:
+The customer execution plane operates directly on Base L2 with zero intermediary bridge dependencies:
 
 ```
-[ ATOMIC SWAP BOUNDARY ]                                 [ DOWNSTREAM CCTP DELIVERY ]
-Lightning BTC (Hold Invoice) ───┐
-                                ├─► Arbitrum Canonical USDC ──► Circle CCTP ──► Base Canonical USDC
-Arbitrum tBTC (HTLCErc20)    ───┘
+[ CUSTOMER EXECUTION PLANE — ATOMIC SWAP BOUNDARY ]
+Lightning BTC (Hold Invoice)  ───┐
+                                 ├─► Canonical Native Circle USDC (Base L2 HtlcErc20)
+Base USDC HTLC (HtlcErc20)    ───┘
+
+[ ASYNCHRONOUS TREASURY PLANE — OPTIONAL BACKGROUND INFRASTRUCTURE ]
+Circle CCTP / DEX Rebalancing ──► Non-customer-path inventory replenishment only
 ```
 
-1. **Atomic Phase**: Lightning Hold Invoice and Arbitrum `HTLCErc20` share the exact same hashlock $H$. Atomic settlement occurs when the client reveals preimage $S$ to claim on Arbitrum.
-2. **Delivery Phase**: Once USDC is claimed on Arbitrum, Circle CCTP burns on Arbitrum and mints canonical USDC on Base.
+1. **Atomic Execution**: Lightning Hold Invoice and Base `HtlcErc20` share the exact same hashlock $H$. Atomic settlement occurs when the client reveals preimage $S$ to claim canonical USDC on Base.
+2. **Treasury Decoupling**: Background inventory replenishment (e.g., CCTP across chains, DEX hedging) occurs strictly out-of-band on the treasury plane and is never a synchronous dependency of customer swaps. Zero CCTP or DEX calls exist in the customer critical path.
 
 ---
 
@@ -150,10 +153,11 @@ Standardized interface `ILightningAtomicBackend`:
 ## 11. EVM ATOMIC BACKEND
 
 Standardized interface `IEvmAtomicBackend`:
-* `fundHtlc(params)`: Locks operator collateral into `HTLCErc20` on Arbitrum.
-* `observeHtlc(swapKey)`: Confirms on-chain event `HTLCErc20.Created`.
-* `submitGaslessClaim(params, signature)`: Relays `coordinator.redeemAndExecute` on behalf of client.
-* `refundHtlc(swapKey)`: Reclaims collateral after timelock expiry.
+* `fundHtlc(params)`: Locks operator canonical USDC into `HtlcErc20` directly on Base (`0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f` on Base Sepolia / Base Mainnet).
+* `observeHtlc(swapKey)`: Confirms on-chain event `HtlcFunded`.
+* `claimHtlc(params)`: Executes or relays on-chain claim with preimage $S$ directly on Base.
+* `extractAndVerifyClaimEvidence(params)`: Cryptographically verifies the on-chain claim receipt, preimage, and token transfer.
+* `refundHtlc(swapKey)`: Reclaims operator collateral after timelock expiry.
 
 ---
 
@@ -161,11 +165,11 @@ Standardized interface `IEvmAtomicBackend`:
 
 The `AtomicCoordinator` enforces the dual-leg state transition:
 1. Payer funds Lightning hold invoice $\rightarrow$ Status: `LIGHTNING_HELD`.
-2. Coordinator funds Arbitrum `HTLCErc20` $\rightarrow$ Status: `EVM_FUNDED`.
-3. Client provides EIP-712 signature + preimage $\rightarrow$ Status: `CLAIMING`.
-4. Relayer submits transaction $\rightarrow$ Preimage is verified on-chain.
-5. Coordinator settles Lightning hold invoice with revealed preimage $\rightarrow$ Status: `LIGHTNING_SETTLED`.
-6. CCTP mint is confirmed on Base $\rightarrow$ Status: `COMPLETED`.
+2. Coordinator funds Base `HtlcErc20` with canonical native USDC $\rightarrow$ Status: `EVM_FUNDED`.
+3. Client broadcasts on-chain claim with preimage $S$ on Base $\rightarrow$ Status: `EVM_CLAIM_DETECTED` / `CLAIMING`.
+4. Preimage and claim confirmed on Base $\rightarrow$ Status: `EVM_CLAIM_CONFIRMED`.
+5. Coordinator settles Lightning hold invoice with revealed preimage $S$ $\rightarrow$ Status: `LIGHTNING_SETTLED`.
+6. Finality verified and swap terminal $\rightarrow$ Status: `COMPLETED`.
 
 ---
 
@@ -173,8 +177,8 @@ The `AtomicCoordinator` enforces the dual-leg state transition:
 
 * **Secret Preimage ($S$)**: 32-byte cryptographically secure random value generated by the client.
 * **Hashlock ($H$)**: $H = \text{SHA-256}(S)$.
-* **Symmetry**: Both the Lightning invoice and the EVM `HTLCErc20` contract require the identical $H$.
-* **Secrecy**: Preimage is NEVER stored in ordinary Router persistence; it is held in transient memory only during the claim dispatch step.
+* **Symmetry**: Both the Lightning invoice and the Base `HtlcErc20` contract require the identical $H$.
+* **Secrecy**: Preimage is NEVER stored in ordinary Router persistence; it is held in transient memory only during the claim settlement step.
 
 ---
 
@@ -182,9 +186,9 @@ The `AtomicCoordinator` enforces the dual-leg state transition:
 
 State transitions require persistent, tamper-evident proof:
 * `HoldInvoiceEvidence`: `payment_hash`, `bolt11`, `accepted_at`.
-* `EvmFundingEvidence`: `tx_hash`, `block_number`, `swap_key`.
-* `ClaimEvidence`: `preimage`, `claim_tx_hash`, `revealed_at`.
-* `DestinationEvidence`: Base RPC transaction receipt + decoded `Transfer` event verifying canonical USDC contract (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`), recipient address, and amount.
+* `EvmFundingEvidence`: `tx_hash`, `block_number`, `swap_key`, `htlc_id`.
+* `ClaimEvidence`: `preimage`, `claim_tx_hash`, `revealed_at`, `block_number`.
+* `DestinationEvidence`: Base RPC transaction receipt + decoded `HtlcClaimed` / `Transfer` event verifying canonical USDC contract (`0x036CbD53842c5426634e7929541eC2318f3dCF7e` on Sepolia / `0x833589fCD6edb6E08f4c7c32D4f71b54bdA02913` on Mainnet), recipient address, and exact token amount.
 
 ---
 
@@ -254,14 +258,14 @@ Upon process startup:
 
 ## 20. CHAIN FINALITY & REORG MODEL
 
-* L2 transactions (Arbitrum/Base) are considered confirmed upon sequencer receipt + L1 batch confirmation.
+* Base L2 transactions are considered confirmed upon sequencer receipt + safe confirmation depth (`BaseNetworkGuard`).
 * Transactions with receipt status `0` (Reverted) immediately block `COMPLETED` and trigger recovery.
 
 ---
 
 ## 21. RPC ABSTRACTION
 
-* EVM interactions are abstracted through `IEvmRpcClient`.
+* EVM interactions are abstracted through `IEvmAtomicBackend` / `IEvmRpcClient`.
 * Allows seamless failover across multiple RPC providers (Alchemy, Infura, local node) without modifying financial logic.
 
 ---
@@ -269,15 +273,15 @@ Upon process startup:
 ## 22. LIQUIDITY ABSTRACTION
 
 * `ILiquidityInventory` interface manages collateral reservations.
-* Ensures that the Router never issues a hold invoice without first reserving the required `tBTC` on Arbitrum.
+* Ensures that the Router never issues a hold invoice without first reserving the required canonical native USDC directly on Base.
 
 ---
 
-## 23. DEX & CCTP FUTURE PATH
+## 23. TREASURY PLANE: ASYNCHRONOUS INVENTORY REPLENISHMENT & HEDGING (NON-CUSTOMER PATH)
 
-* On Arbitrum, `HTLCCoordinator` executes batched 1inch DEX swaps from `tBTC` to `USDC`.
-* `CCTPBridgeAdapter` immediately burns USDC on Arbitrum via Circle `TokenMessenger.depositForBurn`.
-* Circle Iris relayer gaslessly mints canonical USDC to the user's Base address.
+* **Decoupled Architecture**: Circle CCTP and DEX operations belong strictly to the operator treasury plane. They are NOT part of the synchronous customer execution path.
+* **Asynchronous Replenishment**: When operator Base USDC inventory requires replenishment, automated background treasury processes may bridge USDC via Circle CCTP (`TokenMessenger.depositForBurn`) or rebalance inventory.
+* **Zero Customer Impact**: A customer swap never waits on CCTP attestations or DEX swap executions. The customer leg executes purely between Lightning and native Base USDC.
 
 ---
 
@@ -291,9 +295,9 @@ Upon process startup:
 
 ## 25. SATORA OPEN-SOURCE REUSE POLICY
 
-* We adapt MIT-licensed smart contracts (`HTLCErc20.sol`, `HTLCCoordinator.sol`, `CCTPBridgeAdapter.sol`) and cryptographic signing utilities from `satoraHQ`.
+* We adapt MIT-licensed smart contracts (`HtlcErc20.sol`) and cryptographic verification patterns from `satoraHQ`.
 * Full attribution and copyright notices are preserved in `THIRD_PARTY_NOTICES.md`.
-* We do NOT depend on Satora's proprietary hosted API.
+* We do NOT depend on Satora's proprietary hosted API, nor do customer swaps require intermediate multi-hop coordinator contracts.
 
 ---
 
@@ -337,12 +341,13 @@ Runtime safeguards enforce strict caps:
 
 ---
 
-## 31. LOCAL REGTEST ROADMAP
+## 31. SOVEREIGN DEVELOPMENT ROADMAP
 
-1. **Phase 4A (This Phase)**: Local deterministic simulation & security foundation.
-2. **Phase 4B**: Local Docker Regtest (Bitcoind + LND + Foundry Arbitrum node).
-3. **Phase 4C**: End-to-end atomic swap on Arbitrum Sepolia / Lightning Testnet.
-4. **Phase 4D**: Bounded Mainnet PoC ($10 USD).
+1. **Phase 4A**: Base deployment identity and local/public testnet validation.
+2. **Phase 4.0A**: Live Base Sepolia direct route proof (`DIRECT_BASE_USDC_ROUTE_REPORT.md`).
+3. **Phase 5A / 5B**: Base transaction reliability and coordinator crash recovery.
+4. **Phase 6**: Adversarial failure certification and stress resilience.
+5. **Phase 7**: Production readiness and V1 Core freeze (`357c5ab85344a2fa5602a5e376efc7ea80685498`).
 
 ---
 
@@ -524,10 +529,10 @@ It is NOT a production adapter. Mainnet enablement requires a fresh security rev
 
 ---
 
-## 18. PHASE 3: REAL LOCAL EVM HTLC BACKEND
+## 36. PHASE 3: REAL LOCAL EVM HTLC BACKEND
 
 ### Architectural Overview
-Phase 3 replaces the second simulated protocol boundary (`FakeEvmAtomicBackend`) with a real on-chain smart contract implementation (`RealLocalEvmAtomicBackend`) running against a deterministic local EVM development chain (`Hardhat node`, Chain ID 31337).
+Phase 3 replaces the second simulated protocol boundary (`FakeEvmAtomicBackend`) with a real on-chain smart contract implementation (`RealLocalEvmAtomicBackend`) running against a deterministic local EVM development chain (`Hardhat node`, Chain ID 31337), leading to the Phase 4 Base Sepolia deployment (`0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f`).
 
 ### Smart Contract (`contracts/HtlcErc20.sol`)
 - **Solidity Version**: `0.8.28` pinned with fixed settings (`optimizer: { enabled: true, runs: 200 }`).
@@ -536,7 +541,7 @@ Phase 3 replaces the second simulated protocol boundary (`FakeEvmAtomicBackend`)
   $$\text{htlcId} = \text{keccak256}(\text{abi.encode}(\text{hashLock}, \text{amount}, \text{token}, \text{sender}, \text{claimAddress}, \text{refundAddress}, \text{timelock}, \text{chainid}))$$
 - **Checks-Effects-Interactions**: Status updated before ERC-20 token transfers, preventing reentrancy.
 - **Zero Admin Keys**: No owner, no upgradeability, no proxy pattern, no pause mechanism, no emergency drain function.
-- **Pinned Bytecode SHA-256**: `10dc4b0c4864722e9770f035a0d64f2963d642bc165146bba4871a0e131a58cd`.
+- **Pinned Bytecode SHA-256**: `10dc4b0c4864722e9770f035a0d64f2963d642bc165146bba4871a0e131a58cd` (legacy hex) / `8627fe35109888bbb58873f4e8f3beb90c7c0efee1411f81de9aa21a602e1d67` (canonical raw bytecode).
 
 ### Dual-Protocol Real Atomic Lifecycle
 ```
@@ -551,7 +556,7 @@ CLIENT                        COORDINATOR / BACKENDS                    SMART CO
   │──────────────────────────────────────────────────────────────────────────────>│ [LND-B -> LND-A]
   │                                     │<── Payment HELD (ACCEPTED) ─────────────│ (Locked)
   │                                     │                                         │
-  │                                     │ 3. Fund EVM HTLC (T_evm = now + 12h)    │
+  │ 3. Fund EVM HTLC (T_evm = now + 12h)│
   │                                     │── fund(H, amount, client, refund, T) ──>│ [HtlcErc20.sol]
   │                                     │<── Mined + Event HtlcFunded ────────────│ (Locked)
   │                                     │                                         │
@@ -559,9 +564,9 @@ CLIENT                        COORDINATOR / BACKENDS                    SMART CO
   │──── claimSwap(S) ──────────────────>│── claim(htlcId, S) ────────────────────>│ [HtlcErc20.sol]
   │                                     │<── Tokens Transferred to Client ────────│ (CLAIMED)
   │                                     │                                         │
-  │                                     │ 5. Settle Lightning with Revealed S     │
-  │                                     │── SettleInvoice(S) ────────────────────>│ [LND-A]
-  │                                     │<── Invoice SETTLED ─────────────────────│ (SETTLED)
+  │ 5. Settle Lightning with Revealed S │
+  │── SettleInvoice(S) ────────────────────>│ [LND-A]
+  │<── Invoice SETTLED ─────────────────────│ (SETTLED)
   │                                     │                                         │
   ▼                                     ▼                                         ▼
 [BOTH PROTOCOLS TERMINATED ATOMICALLY WITH ZERO INTERMEDIARY CUSTODY]
@@ -572,5 +577,5 @@ CLIENT                        COORDINATOR / BACKENDS                    SMART CO
 - If client vanishes after EVM funding, operator refunds EVM tokens at $T_{\text{EVM}}$, then cancels the Lightning invoice before $T_{\text{LN}}$, ensuring neither party suffers unilateral capital loss.
 
 ### Network Guard Boundary
-- Hardhat Local Devnet (Chain ID 31337) ONLY.
-- Strict fail-closed checks in `EvmNetworkGuard` reject Ethereum Mainnet (1), Arbitrum (42161), Base (8453), or any unapproved network.
+- Controlled development devnet (31337) in Phase 3; Phase 4 onwards exclusively guarded by `BaseNetworkGuard` on Base Sepolia (84532).
+- Strict fail-closed checks reject Ethereum Mainnet (1), Arbitrum (42161), Base Mainnet mutations (8453 in test phases), or any unapproved network.

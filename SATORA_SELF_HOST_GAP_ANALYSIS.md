@@ -5,6 +5,10 @@
 **Mode**: Read-Only Source Audit & Gap Analysis  
 **Status**: Completed — Zero Code Mutated — Zero Financial State Generated  
 
+> [!NOTE]
+> **HISTORICAL / SUPERSEDED RESEARCH — NOT CURRENT V4 EXECUTION ARCHITECTURE**  
+> This document records research into third-party protocols (Satora). The active architecture uses the sovereign Direct Base canonical USDC HTLC route (`ARCHITECTURE_V4_SOVEREIGN_CORE.md`).
+
 ---
 
 ## 1. EXECUTIVE VERDICT

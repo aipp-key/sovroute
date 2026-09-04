@@ -12,13 +12,23 @@ Rather than relying on third-party custodial web services, centralized bridges, 
 
 ### Primary Route
 
-$$\mathbf{BTC\ (Lightning\ Network)\ \longrightarrow\ Canonical\ USDC\ (Base\ L2)}$$
+$$\mathbf{BTC\ (Lightning\ Network)\ \longleftrightarrow\ Canonical\ USDC\ (Base\ L2)}$$
 
-The initial product solves this route through:
-1. **Lightning Hold Invoices**: Payer locks satoshis off-chain to a 32-byte hashlock $H$.
-2. **Arbitrum One HTLC**: Coordinator locks counterparty `tBTC` collateral on EVM using the identical hashlock $H$.
-3. **Atomic Claim & Settlement**: The agent/client reveals the secret preimage $S$ to claim `tBTC` on EVM, instantly enabling the coordinator to settle the satoshis on Lightning.
-4. **Canonical Base Delivery**: `tBTC` is converted to USDC on Arbitrum and bridged directly to canonical Base USDC (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) via Circle CCTP.
+The initial product solves this route through a direct cross-rail atomic swap:
+1. **Client Hashlock Creation**: Client/agent generates secret preimage $S$ and computes hashlock $H = \text{SHA-256}(S)$. Only $H$ is shared with the Router.
+2. **Lightning Hold Invoice**: Router creates a BOLT11 hold invoice using hashlock $H$. The client locks satoshis off-chain on Lightning (`ACCEPTED` hold state).
+3. **Base Inventory Reservation**: Router reserves canonical native Circle USDC inventory directly on Base L2.
+4. **Direct Base HTLC Funding**: Router locks canonical Base USDC into the immutable `HtlcErc20` contract directly on Base using the identical hashlock $H$ (`EVM_FUNDED`).
+5. **Atomic Claim & Preimage Revelation**: Client reveals secret preimage $S$ directly on Base to claim canonical USDC to their destination address (`CLAIMED`).
+6. **Atomic Lightning Settlement**: The confirmed on-chain claim reveals preimage $S$, enabling the Router to settle the held satoshis on Lightning (`SETTLED`).
+7. **Safe Timelock Refund**: If the client does not claim before the Base timelock expires, the Router reclaims its USDC via on-chain refund and safely cancels the held Lightning invoice (0 satoshis lost, 0 funds stuck).
+
+**Key Architectural Properties:**
+- **Direct Base**: The atomic EVM customer leg executes directly on Base L2 (`contracts/HtlcErc20.sol`).
+- **Zero Arbitrum / Zero tBTC**: Customer settlement token is canonical native Circle USDC directly on Base.
+- **Zero CCTP in Customer Critical Path**: No cross-chain bridge dependencies during a swap. (CCTP is strictly decoupled for asynchronous background treasury replenishment only).
+- **Zero DEX in Customer Critical Path**: Operator quotes fixed rates against native Base USDC inventory; zero slippage or sandwich attack risks.
+- **Isolated External Fallbacks**: Hosted swap providers (FixedFloat, SideShift) are optional, disabled-by-default secondary plugins.
 
 ---
 
@@ -62,14 +72,14 @@ src/
 ## Quickstart & Verification
 
 ### Prerequisites
-- Node.js v22+ (v24 LTS recommended)
+- Node.js 24 LTS (v24.12.0 certified)
 - Python 3.10+ (for secret scanning)
 
 ### 1. Run Tests (100% Offline)
 ```bash
 npm test
 ```
-*Executes all 134 automated tests including 38 sovereign atomic core security tests.*
+*Executes all 155 automated unit tests including 38 sovereign atomic core security tests.*
 
 ### 2. Run TypeScript Typecheck
 ```bash

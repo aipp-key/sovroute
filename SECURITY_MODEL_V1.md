@@ -59,7 +59,7 @@ This threat model analyzes the 30 primary threat and failure sources across all 
 * **Residual Risk**: Operator hot liquidity in active memory is vulnerable to local root compromise.
 
 #### T-04: Compromised Operator Key (Relayer / Hot Wallet)
-* **Asset at Risk**: Operator ETH and floating counterparty liquidity (`tBTC`/USDC).
+* **Asset at Risk**: Operator ETH and floating counterparty liquidity (canonical native USDC on Base).
 * **Trust Boundary**: Operator Secret Management $\rightarrow$ Blockchain Node.
 * **Attack / Failure Scenario**: Attacker obtains operator's relayer private key.
 * **Possible Consequence**: Attacker drains relayer gas balance; cannot steal user in-flight funds because contract output is pinned to user destination.
@@ -81,17 +81,17 @@ This threat model analyzes the 30 primary threat and failure sources across all 
 #### T-06: Compromised EVM Relayer
 * **Asset at Risk**: Transaction submission queue, gas balance.
 * **Trust Boundary**: Router $\rightarrow$ EVM Mempool.
-* **Attack / Failure Scenario**: Relayer modifies transaction data (recipient or amount) when submitting `redeemAndExecute`.
-* **Possible Consequence**: Transaction reverts on-chain because smart contract checks EIP-712 signature over `callsHash` and `destination`.
-* **Prevention**: Smart contract cryptographic enforcement: `HTLCCoordinator` validates `destination` matches the EIP-712 signature signed by the client.
-* **Detection**: On-chain revert monitoring (`InvalidSignature` / `CallsHashMismatch`).
+* **Attack / Failure Scenario**: Relayer attempts to modify transaction data (recipient or amount) when submitting on-chain claim.
+* **Possible Consequence**: Transaction reverts on-chain or claims to the pinned `claimAddress`.
+* **Prevention**: Smart contract cryptographic enforcement: `HtlcErc20` strictly sends claimed tokens to the immutable `claimAddress` registered at creation.
+* **Detection**: On-chain revert monitoring.
 * **Recovery**: Re-dispatch via alternative uncompromised relayer.
 * **Residual Risk**: Relayer can censor or delay submission, triggering timelock expiry.
 
 #### T-07: Malicious Liquidity Counterparty
 * **Asset at Risk**: Router execution throughput, user swap completion.
 * **Trust Boundary**: Router $\rightarrow$ Liquidity Provider.
-* **Attack / Failure Scenario**: Counterparty commits to quote but refuses to lock counter-asset on Arbitrum after user funds Lightning invoice.
+* **Attack / Failure Scenario**: Counterparty commits to quote but refuses to lock counter-asset on Base after user funds Lightning invoice.
 * **Possible Consequence**: User's Lightning payment is stuck in `ACCEPTED` hold state until timeout.
 * **Prevention**: Router will not settle Lightning hold invoice until counterparty HTLC is verified on-chain.
 * **Detection**: In-flight timer expires before `HTLC_FUNDED` state is confirmed.
@@ -188,15 +188,15 @@ This threat model analyzes the 30 primary threat and failure sources across all 
 * **Recovery**: Losing worker awaits winning worker's completion or returns cached result.
 * **Residual Risk**: None; proven by cross-process safety test suite.
 
-#### T-17: Stale Quote / Market Slippage
+#### T-17: Stale Quote / Market Movements
 * **Asset at Risk**: Operator inventory value, user output amount.
 * **Trust Boundary**: RoutePlanner $\rightarrow$ Execution.
 * **Attack / Failure Scenario**: Market prices move significantly between quote generation and execution dispatch.
-* **Possible Consequence**: Execution unprofitable or fails on-chain DEX due to slippage.
-* **Prevention**: Strict quote TTL (e.g., 60 seconds); Router enforces `quote.expires_at > Date.now()` at dispatch gate; on-chain DEX swap specifies `minAmountOut`.
-* **Detection**: `QUOTE_EXPIRED` domain error; DEX revert if slippage exceeded.
-* **Recovery**: Safe abort before funding; refund if DEX reverts.
-* **Residual Risk**: Sub-second price fluctuations within slippage tolerance.
+* **Possible Consequence**: Execution unprofitable or exceeds operator slippage tolerances.
+* **Prevention**: Strict quote TTL (e.g., 60 seconds); Router enforces `quote.expires_at > Date.now()` at dispatch gate; operator inventory quoted with fixed rate bounds.
+* **Detection**: `QUOTE_EXPIRED` domain error.
+* **Recovery**: Safe abort before funding.
+* **Residual Risk**: Sub-second price fluctuations within quoted spread.
 
 #### T-18: Stale Liquidity Data
 * **Asset at Risk**: Execution success rate.
@@ -213,7 +213,7 @@ This threat model analyzes the 30 primary threat and failure sources across all 
 * **Trust Boundary**: EVM Node $\rightarrow$ Verifier.
 * **Attack / Failure Scenario**: 1-block reorg orphans the EVM HTLC funding transaction after Router settles Lightning invoice.
 * **Possible Consequence**: User pays Lightning but HTLC funding is reverted on EVM.
-* **Prevention**: Minimum confirmation requirement before settling Lightning (e.g., Arbitrum L2 sequencing finality + L1 batch posting).
+* **Prevention**: Minimum confirmation requirement before settling Lightning (e.g., Base L2 sequencing finality + safe confirmation depth).
 * **Detection**: Re-checking transaction receipt at higher block height; receipt depth verification.
 * **Recovery**: If reorged out, re-broadcast HTLC funding transaction with higher gas.
 * **Residual Risk**: Deep reorgs (>64 blocks) on L1.
@@ -342,12 +342,12 @@ This threat model analyzes the 30 primary threat and failure sources across all 
         ┌────────────────┴────────────────┐                                  │ (Inventory Collateral)          │ (Durable Claims)
         ▼                                 ▼                                  ▼                                 ▼
 [ LIGHTNING BACKEND ]             [ EVM ATOMIC BACKEND ]             [ EVM RELAYER ]                  [ AUDIT JOURNAL ]
-   (LND / CLN)                  (Arbitrum / Contracts)               (Gas Sponsored)
+   (LND / CLN)                    (Base / HtlcErc20)                 (Gas Sponsored)
 ```
 
 1. **User / Agent Trust Domain**:
    * *In*: Quotes, deposit instructions (hold invoice).
-   * *Out*: Public hashlock, claiming EVM address, EIP-712 signature, preimage (at claim time).
+   * *Out*: Public hashlock, claiming EVM address, preimage (at claim time).
    * *Trust*: Untrusted. Input must be validated.
    * *Secrets*: User private key, user seed. Router NEVER sees or stores them.
 
@@ -370,26 +370,26 @@ This threat model analyzes the 30 primary threat and failure sources across all 
 
 5. **Operator Liquidity Domain**:
    * *In*: Reservation requests.
-   * *Out*: Collateral commitments.
+   * *Out*: Collateral commitments on Base.
    * *Trust*: Internal financial balance.
    * *Secrets*: Hot-wallet inventory keys.
 
 6. **EVM Execution Backend**:
-   * *In*: `HTLCErc20.create`, `coordinator.redeemAndExecute`.
-   * *Out*: Transaction receipts, event logs.
+   * *In*: `HtlcErc20.fund`, `HtlcErc20.claim`, `HtlcErc20.refund`.
+   * *Out*: Transaction receipts, event logs (`HtlcFunded`, `HtlcClaimed`, `HtlcRefunded`).
    * *Trust*: Requires cryptographic verification from RPC.
 
 7. **EVM Relayer**:
-   * *In*: Client EIP-712 signature + DEX calldata.
-   * *Out*: Broadcasted Ethereum transaction.
-   * *Trust*: Bounded trust. Smart contracts enforce destination binding.
+   * *In*: Client on-chain claim dispatch.
+   * *Out*: Broadcasted Ethereum/Base transaction.
+   * *Trust*: Bounded trust. Smart contract enforces recipient binding to `claimAddress`.
    * *Secrets*: Relayer gas private key.
 
-8. **Smart Contracts (`HTLCErc20`, `HTLCCoordinator`, `CCTPBridgeAdapter`)**:
-   * *Trust*: Immutable, audited, mathematically deterministic. No owner, no proxy, no pause.
+8. **Smart Contracts (`contracts/HtlcErc20.sol`)**:
+   * *Trust*: Immutable, non-custodial, mathematically deterministic. No owner, no proxy, no pause.
 
-9. **DEX & CCTP Infrastructure**:
-   * *Trust*: External protocol liquidity. Slipped swaps revert safely.
+9. **Treasury DEX & CCTP Infrastructure (Decoupled)**:
+   * *Trust*: External protocol liquidity. Strictly out-of-band asynchronous inventory rebalancing; never in the customer atomic swap critical path.
 
 10. **Database (SQLite)**:
     * *Trust*: Local durable truth. WAL mode with strict transaction serialization.
@@ -442,8 +442,8 @@ Every implementation phase must satisfy all 25 core security invariants:
 | Key Class | Purpose | Storage Location | Blast Radius if Compromised | Rotatable? |
 | :--- | :--- | :--- | :--- | :--- |
 | **LND Node Macaroon** | Hold-invoice creation & settlement | Encrypted vault / env | Lightning channel liquidity | Yes |
-| **EVM Relayer Key** | Gas payment for `redeemAndExecute` | Encrypted vault / env | Relayer gas balance only (capped) | Yes |
-| **Operator Liquidity Key** | Funding `HTLCErc20` on Arbitrum | Hardware / Cold-hot split | Floating operator inventory on L2 | Yes |
+| **EVM Relayer Key** | Gas payment for on-chain Base claims | Encrypted vault / env | Relayer gas balance only (capped) | Yes |
+| **Operator Liquidity Key** | Funding `HtlcErc20` on Base with canonical USDC | Hardware / Cold-hot split | Floating operator inventory on Base | Yes |
 | **Database Encryption Key** | SQLite WAL encryption (future) | KMS / Host Keyring | Offline database read access | Yes |
 
 *User funds in flight are NEVER exposed to theft if operator keys are compromised.*
@@ -518,8 +518,7 @@ Financial transitions require evidence conforming to strict hierarchy:
 
 ## 13. CHAIN FINALITY ASSUMPTIONS
 
-* Arbitrum One: Sequencer receipt + batch submission to L1.
-* Base L2: Canonical Circle CCTP attestation requiring standard Circle confirmation depth.
+* Base L2: Sequencer receipt + safe confirmation depth (`BaseNetworkGuard`).
 * Bitcoin / Lightning: Channel HTLC commitment settled or held with valid route.
 
 ---
@@ -530,8 +529,8 @@ Financial transitions require evidence conforming to strict hierarchy:
 | :--- | :--- | :--- | :--- |
 | **External Protocol** | Bitcoin Network | Consensus truth | Reorg / Delay |
 | **External Protocol** | Lightning Network | Protocol truth | Channel force-close |
-| **External Protocol** | Ethereum / Arbitrum / Base | Consensus truth | Reorg / RPC downtime |
-| **External Protocol** | Circle CCTP | Protocol bridge | Attestation delay |
+| **External Protocol** | Base L2 | Consensus truth | Reorg / RPC downtime |
+| **Decoupled Treasury** | Circle CCTP (Async) | Protocol bridge | Attestation delay (treasury only) |
 | **Self-Hosted Core** | Router / Coordinator | Sovereign | Process crash |
 | **Self-Hosted Core** | LND Daemon | Sovereign | DB lock / Peer disconnect |
 | **Optional Vendor** | FixedFloat / External | Zero (Untrusted)| API ban / Maintenance |
@@ -558,7 +557,7 @@ Financial transitions require evidence conforming to strict hierarchy:
 
 * **Database**: SQLite WAL files replicated via litestream or atomic `VACUUM INTO`.
 * **LND**: Static Channel Backups (SCB) synced to external secure storage on every channel state update.
-* **Cold Recovery**: If Router server is permanently destroyed, user claims or refunds directly from `HTLCErc20` contract on Arbitrum using standard open-source tools (`doomsday`).
+* **Cold Recovery**: If Router server is permanently destroyed, user claims or refunds directly from `HtlcErc20` contract on Base using standard open-source tools.
 
 ---
 
@@ -590,9 +589,9 @@ No mainnet transaction may occur until:
 
 ## 21. RESIDUAL RISKS
 
-1. **L2 Sequencer Downtime**: Arbitrum sequencer outage delaying HTLC claim submission. Mitigated by wide timelock margins.
-2. **Circle CCTP Attestation Delays**: Network congestion delaying USDC mint on Base. Mitigated by independent settlement tracking.
-3. **Liquidity Imbalance**: Asymmetric volume exhausting operator `tBTC` inventory. Mitigated by automated reservation caps.
+1. **L2 Sequencer Downtime**: Base sequencer outage delaying HTLC claim submission. Mitigated by wide timelock margins (12h on EVM vs. 24h on Lightning).
+2. **Treasury Rebalancing Delays**: Background CCTP or exchange congestion delaying inventory replenishment. Mitigated by decoupled execution plane and pre-allocated inventory buffers.
+3. **Liquidity Imbalance**: Asymmetric volume exhausting operator canonical Base USDC inventory. Mitigated by automated reservation caps and rate adjustments.
 
 ---
 
