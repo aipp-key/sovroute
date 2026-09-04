@@ -12,6 +12,7 @@
     "reliability:test": "node --test --experimental-strip-types tests/base-transaction-reliability.test.ts",
     "coordinator:test": "node --test --experimental-strip-types tests/coordinator-recovery.test.ts",
     "phase6:test": "node --test --experimental-strip-types tests/phase6-adversarial-certification.test.ts",
+    "phase7:test": "node --test --experimental-strip-types tests/phase7-production-readiness.test.ts",
     "test:all": "npm test && npm run regtest:test && npm run evm:test && npm run test:cross-rail && npm run base:test && npm run reliability:test && npm run coordinator:test",
     "typecheck": "tsc --noEmit",
     "quote:demo": "node --experimental-strip-types src/cli/quote-demo.ts",

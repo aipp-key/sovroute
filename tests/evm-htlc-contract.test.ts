@@ -5,7 +5,7 @@
  * Direct contract-level security tests verifying EVM-SEC-1..18 on HtlcErc20.sol.
  */
 
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -51,6 +51,7 @@ describe('PHASE 3 — REAL EVM HTLC CONTRACT SECURITY SUITE', () => {
 
   let htlcAbi: any;
   let tokenAbi: any;
+  let globalSnapshotId: string;
 
   before(async () => {
     publicClient = createPublicClient({
@@ -89,6 +90,11 @@ describe('PHASE 3 — REAL EVM HTLC CONTRACT SECURITY SUITE', () => {
     );
     htlcAbi = htlcArtifact.abi;
     tokenAbi = tokenArtifact.abi;
+    globalSnapshotId = (await publicClient.transport.request({ method: 'evm_snapshot', params: [] })) as string;
+  });
+
+  after(async () => {
+    await publicClient.transport.request({ method: 'evm_revert', params: [globalSnapshotId] });
   });
 
   function extractHtlcId(receipt: any): `0x${string}` {
