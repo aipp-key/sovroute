@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { keccak256, type Hex } from 'viem';
 import {
   type ExecutionRecord,
   ExecutionState,
@@ -16,6 +17,14 @@ import {
   RouterError,
   DomainErrorCode,
 } from '../domain/types.ts';
+import {
+  EvmLogicalIntentState,
+  EvmPhysicalAttemptStatus,
+  type EvmLogicalIntent,
+  type EvmPhysicalAttempt,
+  type CreateIntentParams,
+  type PrepareAttemptParams,
+} from '../atomic/evm/transaction-types.ts';
 
 export interface SqliteDbOptions {
   filename?: string;
@@ -107,6 +116,62 @@ export class SqlitePersistence {
         claimed_at TEXT NOT NULL,
         FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS evm_transaction_intents (
+        id TEXT PRIMARY KEY,
+        swap_key TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        chain_id INTEGER NOT NULL,
+        signer_address TEXT NOT NULL,
+        target_contract TEXT NOT NULL,
+        calldata_hash TEXT NOT NULL,
+        calldata_bytes TEXT NOT NULL,
+        value_wei TEXT NOT NULL,
+        nonce INTEGER,
+        status TEXT NOT NULL,
+        canonical_tx_hash TEXT,
+        failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (swap_key, action_type)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_evm_intents_unique_nonce
+        ON evm_transaction_intents(chain_id, signer_address, nonce)
+        WHERE nonce IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_evm_intents_status
+        ON evm_transaction_intents(status);
+
+      CREATE TABLE IF NOT EXISTS evm_transaction_attempts (
+        id TEXT PRIMARY KEY,
+        intent_id TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
+        chain_id INTEGER NOT NULL,
+        signer_address TEXT NOT NULL,
+        nonce INTEGER NOT NULL,
+        tx_hash TEXT UNIQUE NOT NULL,
+        to_address TEXT NOT NULL,
+        value_wei TEXT NOT NULL,
+        data TEXT NOT NULL,
+        calldata_hash TEXT NOT NULL,
+        gas_limit TEXT NOT NULL,
+        max_fee_per_gas_wei TEXT NOT NULL,
+        max_priority_fee_per_gas_wei TEXT NOT NULL,
+        worst_case_cost_wei TEXT NOT NULL,
+        status TEXT NOT NULL,
+        mined_block_number INTEGER,
+        receipt_status INTEGER,
+        broadcast_at TEXT,
+        reconciled_at TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (intent_id) REFERENCES evm_transaction_intents(id) ON DELETE CASCADE,
+        UNIQUE (intent_id, attempt_number)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_evm_attempts_intent ON evm_transaction_attempts(intent_id);
+      CREATE INDEX IF NOT EXISTS idx_evm_attempts_status ON evm_transaction_attempts(status);
     `);
 
     // Safe additive migrations for existing DB
@@ -598,6 +663,661 @@ export class SqlitePersistence {
       metadata: r.metadata_json ? JSON.parse(r.metadata_json as string) : null,
       createdAt: r.created_at as string,
     }));
+  }
+
+  // ==========================================
+  // PHASE 5A: EVM RELIABILITY TRANSACTION METHODS
+  // ==========================================
+
+  public getOrCreateEvmIntent(params: CreateIntentParams): EvmLogicalIntent {
+    const existing = this.getEvmIntentBySwapKey(params.swapKey, params.actionType);
+    if (existing) {
+      return existing;
+    }
+
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const calldataFingerprint = keccak256(params.calldata);
+    const valueWei = (params.valueWei ?? 0n).toString();
+    const signer = params.signerAddress.toLowerCase() as `0x${string}`;
+    const target = params.targetAddress.toLowerCase() as `0x${string}`;
+
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO evm_transaction_intents (
+          id, swap_key, action_type, chain_id, signer_address,
+          target_contract, calldata_hash, calldata_bytes, value_wei,
+          nonce, status, canonical_tx_hash, failure_reason,
+          created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          NULL, ?, NULL, NULL,
+          ?, ?
+        )
+      `);
+      stmt.run(
+        id,
+        params.swapKey,
+        params.actionType,
+        params.chainId,
+        signer,
+        target,
+        calldataFingerprint,
+        params.calldata,
+        valueWei,
+        EvmLogicalIntentState.CREATED,
+        now,
+        now
+      );
+
+      return {
+        id,
+        swapKey: params.swapKey,
+        chainId: params.chainId,
+        signerAddress: signer,
+        nonce: null,
+        actionType: params.actionType,
+        targetAddress: target,
+        calldataFingerprint,
+        valueWei: params.valueWei ?? 0n,
+        status: EvmLogicalIntentState.CREATED,
+        canonicalTxHash: null,
+        failureReason: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } catch (err) {
+      const concurrent = this.getEvmIntentBySwapKey(params.swapKey, params.actionType);
+      if (concurrent) {
+        return concurrent;
+      }
+      throw err;
+    }
+  }
+
+  public getEvmIntentById(id: string): EvmLogicalIntent | null {
+    const stmt = this.db.prepare('SELECT * FROM evm_transaction_intents WHERE id = ?');
+    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return this.mapRowToEvmIntent(row);
+  }
+
+  public getEvmIntentBySwapKey(
+    swapKey: string,
+    actionType: 'FUND' | 'REFUND' | 'APPROVE'
+  ): EvmLogicalIntent | null {
+    const stmt = this.db.prepare(
+      'SELECT * FROM evm_transaction_intents WHERE swap_key = ? AND action_type = ?'
+    );
+    const row = stmt.get(swapKey, actionType) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return this.mapRowToEvmIntent(row);
+  }
+
+  public getUnresolvedNonceReservation(
+    chainId: number,
+    signerAddress: string,
+    excludeIntentId?: string
+  ): EvmLogicalIntent | null {
+    const signer = signerAddress.toLowerCase();
+    const query = excludeIntentId
+      ? `SELECT * FROM evm_transaction_intents
+         WHERE chain_id = ? AND signer_address = ? AND nonce IS NOT NULL
+           AND id != ?
+           AND status NOT IN ('REVERTED', 'FAILED', 'FEE_CAP_BLOCKED')
+           AND NOT EXISTS (
+             SELECT 1 FROM evm_transaction_attempts
+             WHERE intent_id = evm_transaction_intents.id
+           )
+         ORDER BY nonce ASC
+         LIMIT 1`
+      : `SELECT * FROM evm_transaction_intents
+         WHERE chain_id = ? AND signer_address = ? AND nonce IS NOT NULL
+           AND status NOT IN ('REVERTED', 'FAILED', 'FEE_CAP_BLOCKED')
+           AND NOT EXISTS (
+             SELECT 1 FROM evm_transaction_attempts
+             WHERE intent_id = evm_transaction_intents.id
+           )
+         ORDER BY nonce ASC
+         LIMIT 1`;
+
+    const stmt = this.db.prepare(query);
+    const row = (excludeIntentId
+      ? stmt.get(chainId, signer, excludeIntentId)
+      : stmt.get(chainId, signer)) as Record<string, unknown> | undefined;
+
+    if (!row) return null;
+    return this.mapRowToEvmIntent(row);
+  }
+
+  public reserveEvmNonce(
+    intentId: string,
+    rpcPendingNonce: number,
+    options?: { enforceNoUnresolvedReservations?: boolean }
+  ): { intent: EvmLogicalIntent; nonce: number } {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const intentRow = this.db
+        .prepare('SELECT * FROM evm_transaction_intents WHERE id = ?')
+        .get(intentId) as Record<string, unknown> | undefined;
+
+      if (!intentRow) {
+        throw new Error(`EVM intent ${intentId} not found`);
+      }
+
+      if (intentRow.nonce !== null && intentRow.nonce !== undefined) {
+        this.db.exec('COMMIT');
+        return {
+          intent: this.mapRowToEvmIntent(intentRow),
+          nonce: Number(intentRow.nonce),
+        };
+      }
+
+      const chainId = Number(intentRow.chain_id);
+      const signerAddress = (intentRow.signer_address as string).toLowerCase();
+
+      if (options?.enforceNoUnresolvedReservations) {
+        const unresolved = this.getUnresolvedNonceReservation(chainId, signerAddress, intentId);
+        if (unresolved) {
+          throw new Error(
+            `UNRESOLVED_NONCE_RESERVATION: Intent ${unresolved.id} holds reserved nonce ${unresolved.nonce} with zero physical attempts. Recovery is required before allocating higher nonces.`
+          );
+        }
+      }
+
+      const maxRow = this.db
+        .prepare(`
+          SELECT MAX(i.nonce) as max_nonce
+          FROM evm_transaction_intents i
+          WHERE i.chain_id = ? AND i.signer_address = ? AND i.nonce IS NOT NULL
+            AND (
+              i.status NOT IN ('REVERTED', 'FAILED', 'FEE_CAP_BLOCKED')
+              OR EXISTS (
+                SELECT 1 FROM evm_transaction_attempts a
+                WHERE a.intent_id = i.id
+                  AND a.status IN ('BROADCAST', 'MINED_SUCCESS', 'MINED_REVERT', 'SUPERSEDED')
+              )
+            )
+        `)
+        .get(chainId, signerAddress) as { max_nonce: number | null } | undefined;
+
+      const highestDbNonce = maxRow && maxRow.max_nonce !== null ? Number(maxRow.max_nonce) : -1;
+      const candidateNonce = Math.max(rpcPendingNonce, highestDbNonce + 1);
+
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          'UPDATE evm_transaction_intents SET nonce = ?, status = ?, updated_at = ? WHERE id = ?'
+        )
+        .run(candidateNonce, EvmLogicalIntentState.NONCE_RESERVED, now, intentId);
+
+      const updatedRow = this.db
+        .prepare('SELECT * FROM evm_transaction_intents WHERE id = ?')
+        .get(intentId) as Record<string, unknown>;
+
+      this.db.exec('COMMIT');
+      return {
+        intent: this.mapRowToEvmIntent(updatedRow),
+        nonce: candidateNonce,
+      };
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public recordEvmAttempt(params: PrepareAttemptParams): EvmPhysicalAttempt {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const worstCaseCostWei = (params.gasLimit * params.maxFeePerGas + params.valueWei).toString();
+    const calldataFingerprint = keccak256(params.data);
+    const signer = params.signerAddress.toLowerCase() as `0x${string}`;
+    const to = params.toAddress.toLowerCase() as `0x${string}`;
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.db
+        .prepare(
+          'SELECT * FROM evm_transaction_attempts WHERE intent_id = ? AND attempt_number = ?'
+        )
+        .get(params.intentId, params.attemptNumber) as Record<string, unknown> | undefined;
+
+      if (existing) {
+        this.db.exec('COMMIT');
+        return this.mapRowToEvmAttempt(existing);
+      }
+
+      this.db
+        .prepare(`
+          INSERT INTO evm_transaction_attempts (
+            id, intent_id, attempt_number, chain_id, signer_address,
+            nonce, tx_hash, to_address, value_wei, data,
+            calldata_hash, gas_limit, max_fee_per_gas_wei,
+            max_priority_fee_per_gas_wei, worst_case_cost_wei,
+            status, mined_block_number, receipt_status,
+            broadcast_at, reconciled_at, error_message, created_at
+          ) VALUES (
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, NULL, NULL,
+            NULL, NULL, NULL, ?
+          )
+        `)
+        .run(
+          id,
+          params.intentId,
+          params.attemptNumber,
+          params.chainId,
+          signer,
+          params.nonce,
+          params.txHash.toLowerCase(),
+          to,
+          params.valueWei.toString(),
+          params.data,
+          calldataFingerprint,
+          params.gasLimit.toString(),
+          params.maxFeePerGas.toString(),
+          params.maxPriorityFeePerGas.toString(),
+          worstCaseCostWei,
+          EvmPhysicalAttemptStatus.PREPARED,
+          now
+        );
+
+      this.db
+        .prepare('UPDATE evm_transaction_intents SET status = ?, updated_at = ? WHERE id = ?')
+        .run(EvmLogicalIntentState.DISPATCHING, now, params.intentId);
+
+      const inserted = this.db
+        .prepare('SELECT * FROM evm_transaction_attempts WHERE id = ?')
+        .get(id) as Record<string, unknown>;
+
+      this.db.exec('COMMIT');
+      return this.mapRowToEvmAttempt(inserted);
+    } catch (err: any) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      if (err?.message?.includes('UNIQUE constraint failed')) {
+        const existing = this.db
+          .prepare(
+            'SELECT * FROM evm_transaction_attempts WHERE intent_id = ? AND attempt_number = ?'
+          )
+          .get(params.intentId, params.attemptNumber) as Record<string, unknown> | undefined;
+        if (existing) {
+          return this.mapRowToEvmAttempt(existing);
+        }
+      }
+      throw err;
+    }
+  }
+
+  public markEvmAttemptBroadcast(attemptId: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const attemptRow = this.db
+        .prepare('SELECT intent_id FROM evm_transaction_attempts WHERE id = ?')
+        .get(attemptId) as { intent_id: string } | undefined;
+
+      if (!attemptRow) {
+        throw new Error(`EVM attempt ${attemptId} not found`);
+      }
+
+      const now = new Date().toISOString();
+      this.db
+        .prepare('UPDATE evm_transaction_attempts SET status = ?, broadcast_at = ? WHERE id = ?')
+        .run(EvmPhysicalAttemptStatus.BROADCAST, now, attemptId);
+
+      this.db
+        .prepare(`
+          UPDATE evm_transaction_intents
+          SET status = ?, updated_at = ?
+          WHERE id = ? AND status IN (?, ?, ?)
+        `)
+        .run(
+          EvmLogicalIntentState.PENDING,
+          now,
+          attemptRow.intent_id,
+          EvmLogicalIntentState.CREATED,
+          EvmLogicalIntentState.NONCE_RESERVED,
+          EvmLogicalIntentState.DISPATCHING
+        );
+
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public getEvmAttemptsForIntent(intentId: string): EvmPhysicalAttempt[] {
+    const stmt = this.db.prepare(
+      'SELECT * FROM evm_transaction_attempts WHERE intent_id = ? ORDER BY attempt_number ASC'
+    );
+    const rows = stmt.all(intentId) as Record<string, unknown>[];
+    return rows.map((r) => this.mapRowToEvmAttempt(r));
+  }
+
+  public getLatestEvmAttempt(intentId: string): EvmPhysicalAttempt | null {
+    const stmt = this.db.prepare(
+      'SELECT * FROM evm_transaction_attempts WHERE intent_id = ? ORDER BY attempt_number DESC LIMIT 1'
+    );
+    const row = stmt.get(intentId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return this.mapRowToEvmAttempt(row);
+  }
+
+  public getEvmAttemptByTxHash(txHash: Hex): EvmPhysicalAttempt | null {
+    const stmt = this.db.prepare(
+      'SELECT * FROM evm_transaction_attempts WHERE tx_hash = ?'
+    );
+    const row = stmt.get(txHash.toLowerCase()) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return this.mapRowToEvmAttempt(row);
+  }
+
+  public markEvmMinedSuccess(
+    intentId: string,
+    winningAttemptId: string,
+    txHash: Hex,
+    blockNumber: number
+  ): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const now = new Date().toISOString();
+
+      this.db
+        .prepare(`
+          UPDATE evm_transaction_attempts
+          SET status = ?, mined_block_number = ?, receipt_status = 1, reconciled_at = ?
+          WHERE id = ?
+        `)
+        .run(EvmPhysicalAttemptStatus.MINED_SUCCESS, blockNumber, now, winningAttemptId);
+
+      this.db
+        .prepare(`
+          UPDATE evm_transaction_attempts
+          SET status = ?, reconciled_at = ?
+          WHERE intent_id = ? AND id != ? AND status IN (?, ?)
+        `)
+        .run(
+          EvmPhysicalAttemptStatus.SUPERSEDED,
+          now,
+          intentId,
+          winningAttemptId,
+          EvmPhysicalAttemptStatus.BROADCAST,
+          EvmPhysicalAttemptStatus.PREPARED
+        );
+
+      this.db
+        .prepare(`
+          UPDATE evm_transaction_intents
+          SET status = ?, canonical_tx_hash = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(EvmLogicalIntentState.CONFIRMED, txHash.toLowerCase(), now, intentId);
+
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public markEvmMinedRevert(
+    intentId: string,
+    attemptId: string,
+    blockNumber: number,
+    errorMessage?: string
+  ): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const now = new Date().toISOString();
+
+      this.db
+        .prepare(`
+          UPDATE evm_transaction_attempts
+          SET status = ?, mined_block_number = ?, receipt_status = 0, reconciled_at = ?, error_message = ?
+          WHERE id = ?
+        `)
+        .run(
+          EvmPhysicalAttemptStatus.MINED_REVERT,
+          blockNumber,
+          now,
+          errorMessage ?? 'Transaction reverted on-chain',
+          attemptId
+        );
+
+      this.db
+        .prepare(`
+          UPDATE evm_transaction_intents
+          SET status = ?, failure_reason = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          EvmLogicalIntentState.REVERTED,
+          errorMessage ?? 'Transaction reverted on-chain',
+          now,
+          intentId
+        );
+
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public markEvmFeeCapBlocked(intentId: string, reason: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const broadcastAttempt = this.db
+        .prepare(`
+          SELECT 1 FROM evm_transaction_attempts
+          WHERE intent_id = ? AND status IN ('BROADCAST', 'MINED_SUCCESS', 'MINED_REVERT', 'SUPERSEDED')
+          LIMIT 1
+        `)
+        .get(intentId);
+
+      const now = new Date().toISOString();
+      if (!broadcastAttempt) {
+        this.db
+          .prepare(`
+            UPDATE evm_transaction_intents
+            SET status = ?, failure_reason = ?, nonce = NULL, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(EvmLogicalIntentState.FEE_CAP_BLOCKED, reason, now, intentId);
+      } else {
+        this.db
+          .prepare(`
+            UPDATE evm_transaction_intents
+            SET status = ?, failure_reason = ?, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(EvmLogicalIntentState.FEE_CAP_BLOCKED, reason, now, intentId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public markEvmNonceConflict(intentId: string, reason: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`
+        UPDATE evm_transaction_intents
+        SET status = ?, failure_reason = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(EvmLogicalIntentState.NONCE_CONFLICT, reason, now, intentId);
+  }
+
+  public markEvmIntentFailed(intentId: string, reason: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const broadcastAttempt = this.db
+        .prepare(`
+          SELECT 1 FROM evm_transaction_attempts
+          WHERE intent_id = ? AND status IN ('BROADCAST', 'MINED_SUCCESS', 'MINED_REVERT', 'SUPERSEDED')
+          LIMIT 1
+        `)
+        .get(intentId);
+
+      const now = new Date().toISOString();
+      if (!broadcastAttempt) {
+        this.db
+          .prepare(`
+            UPDATE evm_transaction_intents
+            SET status = ?, failure_reason = ?, nonce = NULL, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(EvmLogicalIntentState.FAILED, reason, now, intentId);
+      } else {
+        this.db
+          .prepare(`
+            UPDATE evm_transaction_intents
+            SET status = ?, failure_reason = ?, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(EvmLogicalIntentState.FAILED, reason, now, intentId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public markEvmSimulationReverted(intentId: string, reason: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const broadcastAttempt = this.db
+        .prepare(`
+          SELECT 1 FROM evm_transaction_attempts
+          WHERE intent_id = ? AND status IN ('BROADCAST', 'MINED_SUCCESS', 'MINED_REVERT', 'SUPERSEDED')
+          LIMIT 1
+        `)
+        .get(intentId);
+
+      const now = new Date().toISOString();
+      if (!broadcastAttempt) {
+        this.db
+          .prepare(`
+            UPDATE evm_transaction_intents
+            SET status = ?, failure_reason = ?, nonce = NULL, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(EvmLogicalIntentState.REVERTED, reason, now, intentId);
+      } else {
+        this.db
+          .prepare(`
+            UPDATE evm_transaction_intents
+            SET status = ?, failure_reason = ?, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(EvmLogicalIntentState.REVERTED, reason, now, intentId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public getActiveEvmIntents(chainId?: number): EvmLogicalIntent[] {
+    const query =
+      chainId !== undefined
+        ? 'SELECT * FROM evm_transaction_intents WHERE chain_id = ? AND status IN (?, ?, ?, ?) ORDER BY created_at ASC'
+        : 'SELECT * FROM evm_transaction_intents WHERE status IN (?, ?, ?, ?) ORDER BY created_at ASC';
+    const params =
+      chainId !== undefined
+        ? [
+            chainId,
+            EvmLogicalIntentState.CREATED,
+            EvmLogicalIntentState.NONCE_RESERVED,
+            EvmLogicalIntentState.DISPATCHING,
+            EvmLogicalIntentState.PENDING,
+          ]
+        : [
+            EvmLogicalIntentState.CREATED,
+            EvmLogicalIntentState.NONCE_RESERVED,
+            EvmLogicalIntentState.DISPATCHING,
+            EvmLogicalIntentState.PENDING,
+          ];
+    const stmt = this.db.prepare(query);
+    const rows = stmt.all(...params) as Record<string, unknown>[];
+    return rows.map((r) => this.mapRowToEvmIntent(r));
+  }
+
+  private mapRowToEvmIntent(row: Record<string, unknown>): EvmLogicalIntent {
+    return {
+      id: row.id as string,
+      swapKey: row.swap_key as string,
+      chainId: Number(row.chain_id),
+      signerAddress: row.signer_address as `0x${string}`,
+      nonce: row.nonce !== null && row.nonce !== undefined ? Number(row.nonce) : null,
+      actionType: row.action_type as 'FUND' | 'REFUND' | 'APPROVE',
+      targetAddress: row.target_contract as `0x${string}`,
+      calldataFingerprint: row.calldata_hash as Hex,
+      calldata: (row.calldata_bytes as Hex) || undefined,
+      valueWei: BigInt(row.value_wei as string),
+      status: row.status as EvmLogicalIntentState,
+      canonicalTxHash: (row.canonical_tx_hash as Hex) || null,
+      failureReason: (row.failure_reason as string) || null,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    };
+  }
+
+  private mapRowToEvmAttempt(row: Record<string, unknown>): EvmPhysicalAttempt {
+    return {
+      id: row.id as string,
+      intentId: row.intent_id as string,
+      attemptNumber: Number(row.attempt_number),
+      chainId: Number(row.chain_id),
+      signerAddress: row.signer_address as `0x${string}`,
+      nonce: Number(row.nonce),
+      txHash: row.tx_hash as Hex,
+      toAddress: row.to_address as `0x${string}`,
+      valueWei: BigInt(row.value_wei as string),
+      data: row.data as Hex,
+      calldataFingerprint: row.calldata_hash as Hex,
+      gasLimit: BigInt(row.gas_limit as string),
+      maxFeePerGas: BigInt(row.max_fee_per_gas_wei as string),
+      maxPriorityFeePerGas: BigInt(row.max_priority_fee_per_gas_wei as string),
+      status: row.status as EvmPhysicalAttemptStatus,
+      minedBlockNumber:
+        row.mined_block_number !== null && row.mined_block_number !== undefined
+          ? Number(row.mined_block_number)
+          : null,
+      receiptStatus:
+        row.receipt_status !== null && row.receipt_status !== undefined
+          ? Number(row.receipt_status)
+          : null,
+      broadcastAt: (row.broadcast_at as string) || '',
+      reconciledAt: (row.reconciled_at as string) || null,
+      errorMessage: (row.error_message as string) || null,
+      createdAt: row.created_at as string,
+    };
   }
 
   private mapRowToExecution(row: Record<string, unknown>): ExecutionRecord {

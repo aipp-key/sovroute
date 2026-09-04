@@ -30,6 +30,7 @@ import { AtomicCoordinator } from '../src/atomic/coordinator/coordinator.ts';
 import { LndClient } from '../src/atomic/lightning/lnd-client.ts';
 import { LndLightningAtomicBackend } from '../src/atomic/lightning/lnd-backend.ts';
 import { BaseSepoliaAtomicBackend } from '../src/atomic/evm/base-sepolia-backend.ts';
+import { SqlitePersistence } from '../src/persistence/sqlite.ts';
 import { FakeLiquidityInventory } from '../src/atomic/liquidity/fake-inventory.ts';
 import { SovereignAtomicState } from '../src/atomic/types.ts';
 import {
@@ -107,7 +108,7 @@ describe('PHASE 4 — REAL LND REGTEST ↔ LIVE BASE SEPOLIA TEST USDC ATOMIC RO
     await lndClientA.verifyNetworkSafety();
     lndBackend = new LndLightningAtomicBackend(lndClientA);
 
-    // 2. Initialize Base Sepolia Backend (Router core possesses ZERO client keys)
+    // 2. Initialize Base Sepolia Backend with Phase 5A reliability persistence
     baseBackend = new BaseSepoliaAtomicBackend({
       rpcUrl: 'https://sepolia.base.org',
       chainId: BASE_SEPOLIA_CHAIN_ID,
@@ -115,6 +116,7 @@ describe('PHASE 4 — REAL LND REGTEST ↔ LIVE BASE SEPOLIA TEST USDC ATOMIC RO
       tokenAddress: OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS,
       operatorPrivateKey: opData.privateKey,
       requiredConfirmations: 1,
+      persistence: new SqlitePersistence({ filename: ':memory:' }),
     });
     await baseBackend.ensureGuards();
 

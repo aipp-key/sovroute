@@ -26,6 +26,7 @@ import {
   encodeAbiParameters,
   parseAbiParameters,
   decodeFunctionData,
+  encodeFunctionData,
   parseAbi,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -48,6 +49,9 @@ import {
   type EvmHtlcEvidence,
   LightningSettlementGateError,
 } from './evm-types.ts';
+import { SqlitePersistence } from '../../persistence/sqlite.ts';
+import { BaseTransactionManager } from './transaction-manager.ts';
+import type { BaseTransactionPolicy } from './transaction-types.ts';
 
 const ERC20_ABI = parseAbi([
   'function name() view returns (string)',
@@ -68,6 +72,15 @@ export interface BaseSepoliaBackendConfig {
   tokenAddress?: `0x${string}`;
   operatorPrivateKey?: Hex;
   requiredConfirmations?: number;
+  persistence?: SqlitePersistence;
+  transactionPolicy?: Partial<BaseTransactionPolicy>;
+  /**
+   * Unmistakably test-only option.
+   * Direct unmanaged wallet execution is strictly prohibited in live/production configurations.
+   * If an operator key is provided without SqlitePersistence, initialization fails closed
+   * unless this test flag is explicitly set to true.
+   */
+  unsafeDirectExecutionForTests?: boolean;
 }
 
 export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
@@ -77,6 +90,8 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
   private publicClient: any;
   private operatorWallet: WalletClient | undefined;
   private operatorAddress: `0x${string}` | undefined;
+  private transactionManager: BaseTransactionManager | undefined;
+  private unsafeDirectExecutionForTests: boolean = false;
 
   private htlcAddress: `0x${string}`;
   private tokenAddress: `0x${string}`;
@@ -114,6 +129,26 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
         chain: baseSepolia,
         transport: http(rpcUrl),
       });
+
+      if (config.persistence) {
+        this.transactionManager = new BaseTransactionManager({
+          persistence: config.persistence,
+          publicClient: this.publicClient,
+          account,
+          chainId: config.chainId ?? BASE_SEPOLIA_CHAIN_ID,
+          policy: config.transactionPolicy,
+        });
+      } else {
+        // FAIL CLOSED: Silent unmanaged execution is strictly prohibited
+        if (config.unsafeDirectExecutionForTests !== true) {
+          throw new Error(
+            'RELIABILITY_MANAGER_REQUIRED: Live Base execution with operator signer requires SqlitePersistence for Phase 5A reliability guarantees. ' +
+            'Silent fallback to unmanaged direct wallet execution is prohibited. ' +
+            'To bypass strictly in isolated unit tests, unsafeDirectExecutionForTests must be explicitly set to true.'
+          );
+        }
+        this.unsafeDirectExecutionForTests = true;
+      }
     }
 
     this.requiredConfirmations = config.requiredConfirmations ?? 2;
@@ -129,6 +164,14 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
 
     this.tokenAddress = (config.tokenAddress ?? OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS) as `0x${string}`;
     this.htlcAddress = (config.htlcAddress ?? '0x0000000000000000000000000000000000000000') as `0x${string}`;
+  }
+
+  public getTransactionManager(): BaseTransactionManager | undefined {
+    return this.transactionManager;
+  }
+
+  public isUnsafeDirectExecutionEnabled(): boolean {
+    return this.unsafeDirectExecutionForTests;
   }
 
   /**
@@ -306,16 +349,38 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
     })) as bigint;
 
     if (currentAllowance < params.amountUnits) {
-      // Approve EXACT amount only (no infinite approval)
-      const approveTx = await this.operatorWallet.writeContract({
-        account: this.operatorWallet.account!,
-        chain: baseSepolia,
-        address: token,
-        abi: this.tokenAbi,
-        functionName: 'approve',
-        args: [this.htlcAddress, params.amountUnits],
-      });
-      await this.publicClient.waitForTransactionReceipt({ hash: approveTx });
+      if (this.transactionManager) {
+        const approveData = encodeFunctionData({
+          abi: this.tokenAbi,
+          functionName: 'approve',
+          args: [this.htlcAddress, params.amountUnits],
+        });
+        await this.transactionManager.executeIntent({
+          swapKey: `approve:${params.swapKey}:${Date.now()}`,
+          actionType: 'APPROVE',
+          chainId: this.chainId,
+          signerAddress: this.operatorAddress,
+          targetAddress: token,
+          calldata: approveData,
+          valueWei: 0n,
+        });
+      } else {
+        if (!this.unsafeDirectExecutionForTests) {
+          throw new Error(
+            'RELIABILITY_MANAGER_REQUIRED: Unmanaged direct wallet execution is forbidden unless unsafeDirectExecutionForTests is enabled.'
+          );
+        }
+        // Approve EXACT amount only (no infinite approval)
+        const approveTx = await this.operatorWallet.writeContract({
+          account: this.operatorWallet.account!,
+          chain: baseSepolia,
+          address: token,
+          abi: this.tokenAbi,
+          functionName: 'approve',
+          args: [this.htlcAddress, params.amountUnits],
+        });
+        await this.publicClient.waitForTransactionReceipt({ hash: approveTx });
+      }
 
       // Ensure allowance is confirmed across public RPC load-balancer replicas
       for (let i = 0; i < 10; i++) {
@@ -332,24 +397,55 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
 
     this.durableActions.set(actionKey, { status: 'PENDING' });
 
-    // Execute fund
-    const fundTx = await this.operatorWallet.writeContract({
-      account: this.operatorWallet.account!,
-      chain: baseSepolia,
-      address: this.htlcAddress,
-      abi: this.htlcAbi,
-      functionName: 'fund',
-      args: [
-        hashLock,
-        params.amountUnits,
-        token,
-        claimAddr,
-        refundAddr,
-        BigInt(params.refundLocktime),
-      ],
-    });
+    let receipt: any;
+    if (this.transactionManager) {
+      const fundData = encodeFunctionData({
+        abi: this.htlcAbi,
+        functionName: 'fund',
+        args: [
+          hashLock,
+          params.amountUnits,
+          token,
+          claimAddr,
+          refundAddr,
+          BigInt(params.refundLocktime),
+        ],
+      });
+      const result = await this.transactionManager.executeIntent({
+        swapKey: params.swapKey,
+        actionType: 'FUND',
+        chainId: this.chainId,
+        signerAddress: this.operatorAddress,
+        targetAddress: this.htlcAddress,
+        calldata: fundData,
+        valueWei: 0n,
+      });
+      receipt = result.receipt;
+    } else {
+      if (!this.unsafeDirectExecutionForTests) {
+        throw new Error(
+          'RELIABILITY_MANAGER_REQUIRED: Unmanaged direct wallet execution is forbidden unless unsafeDirectExecutionForTests is enabled.'
+        );
+      }
+      // Execute fund
+      const fundTx = await this.operatorWallet.writeContract({
+        account: this.operatorWallet.account!,
+        chain: baseSepolia,
+        address: this.htlcAddress,
+        abi: this.htlcAbi,
+        functionName: 'fund',
+        args: [
+          hashLock,
+          params.amountUnits,
+          token,
+          claimAddr,
+          refundAddr,
+          BigInt(params.refundLocktime),
+        ],
+      });
 
-    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: fundTx });
+      receipt = await this.publicClient.waitForTransactionReceipt({ hash: fundTx });
+    }
     const blockNumber = Number(receipt.blockNumber);
     let blockTimestamp = Math.floor(Date.now() / 1000);
     try {
@@ -696,16 +792,40 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
 
     this.durableActions.set(actionKey, { status: 'PENDING' });
 
-    const refundTx = await this.operatorWallet.writeContract({
-      account: this.operatorWallet.account!,
-      chain: baseSepolia,
-      address: this.htlcAddress,
-      abi: this.htlcAbi,
-      functionName: 'refund',
-      args: [htlcId],
-    });
+    let receipt: any;
+    if (this.transactionManager) {
+      const refundData = encodeFunctionData({
+        abi: this.htlcAbi,
+        functionName: 'refund',
+        args: [htlcId],
+      });
+      const result = await this.transactionManager.executeIntent({
+        swapKey: swapKey,
+        actionType: 'REFUND',
+        chainId: this.chainId,
+        signerAddress: this.operatorAddress,
+        targetAddress: this.htlcAddress,
+        calldata: refundData,
+        valueWei: 0n,
+      });
+      receipt = result.receipt;
+    } else {
+      if (!this.unsafeDirectExecutionForTests) {
+        throw new Error(
+          'RELIABILITY_MANAGER_REQUIRED: Unmanaged direct wallet execution is forbidden unless unsafeDirectExecutionForTests is enabled.'
+        );
+      }
+      const refundTx = await this.operatorWallet.writeContract({
+        account: this.operatorWallet.account!,
+        chain: baseSepolia,
+        address: this.htlcAddress,
+        abi: this.htlcAbi,
+        functionName: 'refund',
+        args: [htlcId],
+      });
 
-    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: refundTx });
+      receipt = await this.publicClient.waitForTransactionReceipt({ hash: refundTx });
+    }
     const blockNumber = Number(receipt.blockNumber);
     const block = await this.publicClient.getBlock({ blockNumber: receipt.blockNumber });
     const blockTimestamp = Number(block.timestamp);
