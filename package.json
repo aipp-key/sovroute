@@ -1,0 +1,41 @@
+{
+  "name": "universal-agent-asset-router",
+  "version": "0.1.0",
+  "description": "Minimal, deterministic asset-routing and execution engine for software and AI agents",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run-unit-tests.mjs",
+    "regtest:test": "node --test --experimental-strip-types tests/lnd-regtest-atomic.test.ts tests/lnd-security-closure.test.ts",
+    "evm:test": "node --test --test-concurrency=1 --experimental-strip-types tests/evm-htlc-contract.test.ts tests/evm-backend-security.test.ts",
+    "test:cross-rail": "node --test --experimental-strip-types tests/cross-rail-atomic.test.ts",
+    "base:test": "node --test --experimental-strip-types tests/base-sepolia-route.test.ts tests/base-sepolia-live.test.ts",
+    "test:all": "npm test && npm run regtest:test && npm run evm:test && npm run test:cross-rail && npm run base:test",
+    "typecheck": "tsc --noEmit",
+    "quote:demo": "node --experimental-strip-types src/cli/quote-demo.ts",
+    "compile": "hardhat compile",
+    "regtest:start": "powershell -ExecutionPolicy Bypass -File regtest-env/start-regtest.ps1",
+    "regtest:stop": "node regtest-env/stop-nodes.mjs",
+    "regtest:bootstrap": "node regtest-env/bootstrap-channel.mjs"
+  },
+  "keywords": [
+    "asset-routing",
+    "agents",
+    "crypto",
+    "state-machine",
+    "deterministic",
+    "reconciliation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "openpgp": "6.3.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "hardhat": "2.22.18",
+    "solc": "0.8.28",
+    "typescript": "^7.0.2",
+    "viem": "2.21.55"
+  }
+}

@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets - NEVER COMMIT SECRETS
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# SQLite Database files
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Build and test artifacts
+dist/
+build/
+coverage/
+.tsbuildinfo
+cache/
+scratch/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Regtest Node Binaries, Data, and Credentials
+regtest-env/bin/
+regtest-env/data/
+*.macaroon
+*.cert
+tls.key
