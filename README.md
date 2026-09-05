@@ -79,7 +79,7 @@ src/
 ```bash
 npm test
 ```
-*Executes all 176 automated unit tests across 13 suites, including 38 sovereign atomic core security tests and 21 liquidity accounting and durable reservation safety tests.*
+*Executes all 180 automated unit tests across 14 suites, including 38 sovereign atomic core security tests, 21 liquidity accounting safety tests, and 4 cross-process concurrency certification tests.*
 
 ### 2. Run TypeScript Typecheck
 ```bash

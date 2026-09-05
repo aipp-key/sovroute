@@ -66,9 +66,18 @@ export class SqlitePersistence {
   }
 
   private initPragmas(): void {
-    this.db.exec('PRAGMA foreign_keys = ON;');
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA synchronous = NORMAL;');
+    try {
+      this.db.exec('PRAGMA busy_timeout = 5000;');
+    } catch {}
+    try {
+      this.db.exec('PRAGMA foreign_keys = ON;');
+    } catch {}
+    try {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+    } catch {}
+    try {
+      this.db.exec('PRAGMA synchronous = NORMAL;');
+    } catch {}
   }
 
   private initSchema(): void {
@@ -1945,6 +1954,23 @@ export class SqlitePersistence {
     return available > 0n ? available : 0n;
   }
 
+  private beginImmediateWithRetry(maxRetries: number = 30): void {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        this.db.exec('BEGIN IMMEDIATE');
+        return;
+      } catch (err: any) {
+        const msg = String(err?.message ?? '').toLowerCase();
+        if (msg.includes('busy') || msg.includes('locked')) {
+          if (attempt === maxRetries - 1) throw err;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5 + Math.floor(Math.random() * 20));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
   public reserveLiquidity(
     executionId: string,
     tokenAddress: string,
@@ -1956,7 +1982,7 @@ export class SqlitePersistence {
       );
     }
     const token = tokenAddress.toLowerCase();
-    this.db.exec('BEGIN IMMEDIATE');
+    this.beginImmediateWithRetry();
     try {
       // 1. Idempotency check: if this execution already owns an active or committed reservation, return it
       const existing = this.db
@@ -2028,7 +2054,7 @@ export class SqlitePersistence {
   }
 
   public commitLiquidityReservation(reservationId: string): void {
-    this.db.exec('BEGIN IMMEDIATE');
+    this.beginImmediateWithRetry();
     try {
       const row = this.db
         .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
@@ -2049,7 +2075,7 @@ export class SqlitePersistence {
   }
 
   public releaseLiquidityReservation(reservationId: string): void {
-    this.db.exec('BEGIN IMMEDIATE');
+    this.beginImmediateWithRetry();
     try {
       const row = this.db
         .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
@@ -2070,7 +2096,7 @@ export class SqlitePersistence {
   }
 
   public restoreRefundLiquidityReservation(reservationId: string): void {
-    this.db.exec('BEGIN IMMEDIATE');
+    this.beginImmediateWithRetry();
     try {
       const row = this.db
         .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
