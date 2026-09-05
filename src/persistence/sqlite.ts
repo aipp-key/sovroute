@@ -2368,8 +2368,7 @@ export class SqlitePersistence {
         .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
         .get(reservationId) as { status: string } | undefined;
       if (!row) {
-        this.db.exec('COMMIT');
-        return;
+        throw new Error(`RESERVATION_NOT_FOUND: Liquidity reservation ${reservationId} not found`);
       }
       if (allowedFrom.includes(row.status)) {
         const now = new Date().toISOString();
@@ -2384,6 +2383,10 @@ export class SqlitePersistence {
         this.db
           .prepare('UPDATE sovereign_swaps SET reservation_status = ?, updated_at = ? WHERE reservation_id = ?')
           .run(nextStatus, new Date().toISOString(), reservationId);
+      } else {
+        throw new Error(
+          `INVALID_RESERVATION_STATUS: Cannot transition reservation ${reservationId} from ${row.status} to ${nextStatus}`
+        );
       }
       this.db.exec('COMMIT');
     } catch (err) {

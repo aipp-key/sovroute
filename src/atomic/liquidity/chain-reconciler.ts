@@ -684,7 +684,17 @@ export class ChainInventoryReconciler {
             intent.id,
             intent.canonicalTxHash ?? undefined
           );
-          if (swap.reservationId) {
+          if (!swap.reservationId) {
+            this.persistence.markSovereignRecoveryRequired(
+              swap.id,
+              `CRITICAL_INVARIANT_VIOLATION: Funding intent resolved to HTLC status ${status} but swap has no reservationId; economic inconsistency`,
+              'MISSING_RESERVATION_ID'
+            );
+            throw new Error(
+              `UNRESOLVED_INTENT_RECONCILIATION_FAILED: MISSING_RESERVATION_ID: Swap ${swap.id} has no reservationId for resolved funding intent`
+            );
+          }
+          try {
             if (status === 1) {
               this.persistence.commitLiquidityReservation(swap.reservationId);
             } else if (status === 2) {
@@ -692,6 +702,15 @@ export class ChainInventoryReconciler {
             } else {
               this.persistence.restoreRefundLiquidityReservation(swap.reservationId);
             }
+          } catch (resErr: any) {
+            this.persistence.markSovereignRecoveryRequired(
+              swap.id,
+              `CRITICAL_INVARIANT_VIOLATION: Funding intent resolved to status ${status} but reservation transition failed (${resErr?.message ?? resErr}); economic inconsistency`,
+              'RESERVATION_TRANSITION_FAILED'
+            );
+            throw new Error(
+              `UNRESOLVED_INTENT_RECONCILIATION_FAILED: Swap ${swap.id} reservation transition failed: ${resErr?.message ?? resErr}`
+            );
           }
           this.persistence.updateSovereignSwap(swap.id, {
             state: status === 1

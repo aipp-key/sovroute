@@ -1262,12 +1262,31 @@ export class AtomicCoordinator {
           }
         }
 
-        if (record.reservationId && record.reservationStatus === 'COMMITTED') {
-          if (typeof (this.inventory as any).restoreRefund === 'function') {
+        if (!record.reservationId) {
+          return this.markRecoveryRequired(
+            executionId,
+            `CRITICAL_INVARIANT_VIOLATION: Base HTLC is REFUNDED but swap has no valid reservationId; economic inconsistency`,
+            'MISSING_RESERVATION_ID'
+          );
+        }
+        const isSqliteInventory =
+          this.inventory instanceof SqliteLiquidityInventory ||
+          typeof (this.inventory as any).getPersistence === 'function';
+
+        try {
+          if (isSqliteInventory) {
+            this.persistence.restoreRefundLiquidityReservation(record.reservationId);
+          } else if (typeof (this.inventory as any).restoreRefund === 'function') {
             await (this.inventory as any).restoreRefund(record.reservationId);
           } else {
             await this.inventory.release(record.reservationId);
           }
+        } catch (refundErr: any) {
+          return this.markRecoveryRequired(
+            executionId,
+            `CRITICAL_INVARIANT_VIOLATION: Base HTLC is REFUNDED but reservation refund restoration failed (${refundErr?.message ?? refundErr}); economic inconsistency`,
+            'RESERVATION_REFUND_RESTORE_FAILED'
+          );
         }
 
         const terminalRefunded = this.updateRecord(
@@ -1374,28 +1393,18 @@ export class AtomicCoordinator {
             this.inventory instanceof SqliteLiquidityInventory ||
             typeof (this.inventory as any).getPersistence === 'function';
 
-          if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
-            try {
+          try {
+            if (isSqliteInventory) {
               this.persistence.settleLiquidityReservation(record.reservationId);
-            } catch (settleErr: any) {
-              return this.markRecoveryRequired(
-                executionId,
-                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation settlement failed (${settleErr?.message ?? settleErr}); economic inconsistency`,
-                'RESERVATION_SETTLE_FAILED'
-              );
+            } else if (typeof (this.inventory as any).settle === 'function') {
+              await (this.inventory as any).settle(record.reservationId);
             }
-          } else {
-            try {
-              if (typeof (this.inventory as any).settle === 'function') {
-                await (this.inventory as any).settle(record.reservationId);
-              }
-            } catch (settleErr: any) {
-              return this.markRecoveryRequired(
-                executionId,
-                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation settlement failed (${settleErr?.message ?? settleErr}); economic inconsistency`,
-                'RESERVATION_SETTLE_FAILED'
-              );
-            }
+          } catch (settleErr: any) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation settlement failed (${settleErr?.message ?? settleErr}); economic inconsistency`,
+              'RESERVATION_SETTLE_FAILED'
+            );
           }
           return this.updateRecord(
             executionId,
@@ -1499,26 +1508,18 @@ export class AtomicCoordinator {
               this.inventory instanceof SqliteLiquidityInventory ||
               typeof (this.inventory as any).getPersistence === 'function';
 
-            if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
-              try {
+            try {
+              if (isSqliteInventory) {
                 this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
-              } catch (commitErr: any) {
-                return this.markRecoveryRequired(
-                  executionId,
-                  `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
-                  'RESERVATION_COMMIT_FAILED'
-                );
-              }
-            } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
-              try {
+              } else {
                 await this.inventory.commit(record.reservationId);
-              } catch (commitErr: any) {
-                return this.markRecoveryRequired(
-                  executionId,
-                  `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
-                  'RESERVATION_COMMIT_FAILED'
-                );
               }
+            } catch (commitErr: any) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                'RESERVATION_COMMIT_FAILED'
+              );
             }
             return this.updateRecord(
               executionId,
@@ -1592,14 +1593,24 @@ export class AtomicCoordinator {
               'MISSING_RESERVATION_ID'
             );
           }
-          if (record.reservationStatus === 'COMMITTED') {
-            if (typeof (this.inventory as any).restoreRefund === 'function') {
+          const isSqliteInventory =
+            this.inventory instanceof SqliteLiquidityInventory ||
+            typeof (this.inventory as any).getPersistence === 'function';
+
+          try {
+            if (isSqliteInventory) {
+              this.persistence.restoreRefundLiquidityReservation(record.reservationId);
+            } else if (typeof (this.inventory as any).restoreRefund === 'function') {
               await (this.inventory as any).restoreRefund(record.reservationId);
             } else {
               await this.inventory.release(record.reservationId);
             }
-          } else if (record.reservationStatus === 'RESERVED') {
-            await this.inventory.release(record.reservationId);
+          } catch (refundErr: any) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is REFUNDED but reservation refund restoration failed (${refundErr?.message ?? refundErr}); economic inconsistency`,
+              'RESERVATION_REFUND_RESTORE_FAILED'
+            );
           }
 
           return this.updateRecord(
@@ -1627,14 +1638,24 @@ export class AtomicCoordinator {
               'MISSING_RESERVATION_ID'
             );
           }
-          if (record.reservationStatus === 'COMMITTED') {
-            if (typeof (this.inventory as any).restoreRefund === 'function') {
+          const isSqliteInventory =
+            this.inventory instanceof SqliteLiquidityInventory ||
+            typeof (this.inventory as any).getPersistence === 'function';
+
+          try {
+            if (isSqliteInventory) {
+              this.persistence.restoreRefundLiquidityReservation(record.reservationId);
+            } else if (typeof (this.inventory as any).restoreRefund === 'function') {
               await (this.inventory as any).restoreRefund(record.reservationId);
             } else {
               await this.inventory.release(record.reservationId);
             }
-          } else if (record.reservationStatus === 'RESERVED') {
-            await this.inventory.release(record.reservationId);
+          } catch (refundErr: any) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is REFUNDED but reservation refund restoration failed (${refundErr?.message ?? refundErr}); economic inconsistency`,
+              'RESERVATION_REFUND_RESTORE_FAILED'
+            );
           }
 
           return this.updateRecord(
@@ -1709,26 +1730,18 @@ export class AtomicCoordinator {
             this.inventory instanceof SqliteLiquidityInventory ||
             typeof (this.inventory as any).getPersistence === 'function';
 
-          if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
-            try {
+          try {
+            if (isSqliteInventory) {
               this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
-            } catch (commitErr: any) {
-              return this.markRecoveryRequired(
-                executionId,
-                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
-                'RESERVATION_COMMIT_FAILED'
-              );
-            }
-          } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
-            try {
+            } else {
               await this.inventory.commit(record.reservationId);
-            } catch (commitErr: any) {
-              return this.markRecoveryRequired(
-                executionId,
-                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
-                'RESERVATION_COMMIT_FAILED'
-              );
             }
+          } catch (commitErr: any) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+              'RESERVATION_COMMIT_FAILED'
+            );
           }
           return this.updateRecord(
             executionId,
@@ -1840,8 +1853,24 @@ export class AtomicCoordinator {
             'CROSS_RAIL_OBLIGATION_REMAINS_HELD'
           );
         } else if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
-          if (record.reservationId && record.reservationStatus === 'RESERVED') {
-            await this.inventory.release(record.reservationId);
+          if (record.reservationId) {
+            const isSqliteInventory =
+              this.inventory instanceof SqliteLiquidityInventory ||
+              typeof (this.inventory as any).getPersistence === 'function';
+
+            try {
+              if (isSqliteInventory) {
+                this.persistence.releaseLiquidityReservation(record.reservationId);
+              } else {
+                await this.inventory.release(record.reservationId);
+              }
+            } catch (releaseErr: any) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Lightning CANCELED and EVM absent but reservation release failed (${releaseErr?.message ?? releaseErr}); economic inconsistency`,
+                'RESERVATION_RELEASE_FAILED'
+              );
+            }
           }
           const holdInvoice = observedInvoice
             ? { ...observedInvoice, state: 'CANCELED' as const, canceledAt: observedInvoice.canceledAt ?? new Date() }

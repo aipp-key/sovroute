@@ -926,16 +926,16 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       assert.equal(reserved, 30_000_000n);
     });
 
-    it('Scenario 34: Settle on non-existent reservation ID is safely no-op', () => {
-      assert.doesNotThrow(() => {
+    it('Scenario 34: Settle on non-existent reservation ID throws fail-closed', () => {
+      assert.throws(() => {
         persistence.settleLiquidityReservation('non-existent-reservation-id');
-      });
+      }, /RESERVATION_NOT_FOUND/);
     });
 
-    it('Scenario 35: Release on non-existent reservation ID is safely no-op', () => {
-      assert.doesNotThrow(() => {
+    it('Scenario 35: Release on non-existent reservation ID throws fail-closed', () => {
+      assert.throws(() => {
         persistence.releaseLiquidityReservation('non-existent-reservation-id');
-      });
+      }, /RESERVATION_NOT_FOUND/);
     });
 
     it('Scenario 36: Double-commit on already committed reservation is safely idempotent', () => {
