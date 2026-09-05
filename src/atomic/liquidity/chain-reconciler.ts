@@ -133,6 +133,19 @@ export class ChainInventoryReconciler {
       return this.readinessState;
     }
 
+    // Active swaps requiring cross-rail recovery block READY state (economic acceptance blocked)
+    const activeSwaps = this.persistence.listNonTerminalSovereignSwaps();
+    const hasUnresolved = activeSwaps.some(
+      (s) =>
+        (!s.tokenAddress || s.tokenAddress.toLowerCase() === token) &&
+        (s.recoveryRequired ||
+          s.state === SovereignAtomicState.RECOVERY_REQUIRED ||
+          s.state === SovereignAtomicState.MANUAL_REVIEW)
+    );
+    if (hasUnresolved) {
+      return 'NOT_READY';
+    }
+
     // Check persistence snapshot
     const snapshot = this.persistence.getLatestChainInventorySnapshot(token);
     if (!snapshot) {

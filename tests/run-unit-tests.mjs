@@ -20,6 +20,7 @@ const unitTestFiles = [
   'tests/inventory-final-four-blockers.test.ts',
   'tests/cross-rail-reservation-retention-cross-process.test.ts',
   'tests/final-blocker-remediation.test.ts',
+  'tests/recovery-bootstrap-terminality.test.ts',
 ];
 
 const res = spawnSync(

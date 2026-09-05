@@ -30,11 +30,13 @@ import { LndClient, type ILndClient, type LndClientConfig } from './atomic/light
 import { LndLightningAtomicBackend } from './atomic/lightning/lnd-backend.ts';
 import { BaseSepoliaAtomicBackend } from './atomic/evm/base-sepolia-backend.ts';
 import { ChainInventoryReconciler } from './atomic/liquidity/chain-reconciler.ts';
-import type {
-  ILightningAtomicBackend,
-  IEvmAtomicBackend,
-  IReconciledLiquidityInventory,
-  IChainCapacityProvider,
+import {
+  type ILightningAtomicBackend,
+  type IEvmAtomicBackend,
+  type IReconciledLiquidityInventory,
+  type IChainCapacityProvider,
+  type InventoryReadinessState,
+  SovereignAtomicState,
 } from './atomic/types.ts';
 import { SqliteLiquidityInventory } from './atomic/liquidity/sqlite-inventory.ts';
 import { BASE_SEPOLIA_CHAIN_ID } from './atomic/evm/base-guard.ts';
@@ -63,6 +65,8 @@ export interface ProductionBootstrapResult {
   readonly inventory: IReconciledLiquidityInventory;
   readonly coordinator: AtomicCoordinator;
   readonly healthService: HealthService;
+  readonly isProcessRecoveryReady?: boolean;
+  readonly isEconomicAcceptanceReady?: boolean;
 }
 
 export interface ProductionBootstrapTestTransports {
@@ -202,8 +206,38 @@ async function bootstrapProductionRouterInternal(
   // =========================================================================
   // STEP 6: BASE ONCHAIN INVENTORY RECONCILIATION ON BOOT (REC-4, REC-5, FF-1)
   // =========================================================================
-  const bootResult = await inventory.reconcileOnBoot();
-  if (bootResult.readinessState !== 'READY') {
+  let bootResult: { readinessState: InventoryReadinessState; headroom: bigint; error?: string };
+  try {
+    bootResult = await inventory.reconcileOnBoot();
+  } catch (err: any) {
+    bootResult = {
+      readinessState: 'UNKNOWN',
+      headroom: 0n,
+      error: err?.message ?? String(err),
+    };
+  }
+
+  if (bootResult.readinessState === 'DEFICIT') {
+    persistence.close();
+    throw new Error(
+      `INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is DEFICIT, expected READY (error: ${bootResult.error ?? 'none'})`
+    );
+  }
+
+  // Inspect non-terminal swaps in persistence
+  const activeSwaps = persistence.listNonTerminalSovereignSwaps();
+  const hasRecoverySwaps = activeSwaps.some(
+    (s) =>
+      s.recoveryRequired ||
+      s.state === SovereignAtomicState.RECOVERY_REQUIRED ||
+      s.state === SovereignAtomicState.MANUAL_REVIEW ||
+      (s.state === SovereignAtomicState.EVM_FUNDING_PENDING && s.evmSwapKey && (() => {
+        const intent = persistence.getEvmIntentBySwapKey(s.evmSwapKey, 'FUND');
+        return intent && !['CREATED', 'NONCE_RESERVED', 'DISPATCHING', 'PENDING', 'CONFIRMED'].includes(intent.status);
+      })())
+  );
+
+  if (bootResult.readinessState !== 'READY' && !hasRecoverySwaps) {
     persistence.close();
     throw new Error(
       `INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is ${bootResult.readinessState}, expected READY (error: ${bootResult.error ?? 'none'})`
@@ -299,6 +333,22 @@ async function bootstrapProductionRouterInternal(
     maxRetries: validatedConfig.safety.maxReconciliationRetries,
   });
 
+  // =========================================================================
+  // STEP 10: PERFORM STARTUP CROSS-RAIL RECOVERY PASS
+  // =========================================================================
+  if (hasRecoverySwaps) {
+    await coordinator.reconcileAll();
+    try {
+      await reconciler.reconcile();
+    } catch {
+      // Reconciler records state fail-closed if still unresolved
+    }
+  }
+
+  const finalReadiness = reconciler.getReadinessState();
+  const isProcessRecoveryReady = true;
+  const isEconomicAcceptanceReady = finalReadiness === 'READY';
+
   return {
     config: validatedConfig,
     persistence,
@@ -308,5 +358,7 @@ async function bootstrapProductionRouterInternal(
     inventory,
     coordinator,
     healthService,
+    isProcessRecoveryReady,
+    isEconomicAcceptanceReady,
   };
 }

@@ -150,13 +150,19 @@ export class LndLightningAtomicBackend implements ILightningAtomicBackend {
 
   /**
    * Authoritative recovery query for process restarts.
+   * Returns HoldInvoice if found.
+   * Returns null ONLY for authoritative LightningInvoiceNotFoundError (404 absence).
+   * Throws on transport, timeout, auth, or protocol errors (never collapses UNKNOWN to null).
    */
   public async recoverAfterRestart(paymentHash: PaymentHash): Promise<HoldInvoice | null> {
     const cleanHash = paymentHash.replace(/^0x/, '').toLowerCase();
     try {
       return await this.observeHoldInvoice(cleanHash);
-    } catch {
-      return null;
+    } catch (err: unknown) {
+      if (err instanceof LightningInvoiceNotFoundError) {
+        return null;
+      }
+      throw err;
     }
   }
 

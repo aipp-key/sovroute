@@ -97,13 +97,7 @@ export class SqliteLiquidityInventory implements IReconciledLiquidityInventory {
         'RECONCILER_NOT_CONFIGURED: SqliteLiquidityInventory requires a ChainInventoryReconciler for startup reconciliation'
       );
     }
-    const res = await this.reconciler.reconcileOnBoot(tokenAddress);
-    if (res.readinessState !== 'READY') {
-      throw new Error(
-        `INVENTORY_NOT_READY: Startup reconciliation failed with state ${res.readinessState}: ${res.error ?? 'UNKNOWN'}`
-      );
-    }
-    return res;
+    return await this.reconciler.reconcileOnBoot(tokenAddress);
   }
 
   async reserve(

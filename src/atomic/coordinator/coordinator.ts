@@ -1339,20 +1339,70 @@ export class AtomicCoordinator {
 
       // CASE 1: Lightning is already SETTLED externally
       if (lnState === 'SETTLED') {
-        return this.updateRecord(
+        // CASE A: Lightning = SETTLED and Base = CLAIMED / completed
+        if (evmObservation.kind === 'CLAIMED' || evmState?.completed === true) {
+          if (record.reservationId) {
+            this.persistence.settleLiquidityReservation(record.reservationId);
+          }
+          return this.updateRecord(
+            executionId,
+            {
+              state: SovereignAtomicState.COMPLETED,
+              reservationStatus: 'SETTLED',
+              holdInvoice: { ...observedInvoice!, state: 'SETTLED' },
+              recoveryRequired: false,
+              failureReason: undefined,
+            },
+            { reason: 'RECONCILED_FROM_CROSS_RAIL_COMPLETED' }
+          );
+        }
+
+        // CASE B: Lightning = SETTLED and Base = FUNDED / LOCKED
+        if (evmObservation.kind === 'FUNDED' || (evmState?.funded && !evmState?.completed && !evmState?.refunded)) {
+          return this.markRecoveryRequired(
+            executionId,
+            'Lightning is SETTLED but Base HTLC remains LOCKED/FUNDED; claim confirmation required',
+            'CROSS_RAIL_LN_SETTLED_BASE_LOCKED'
+          );
+        }
+
+        // CASE C: Lightning = SETTLED and Base = NOT_FUNDED_PROVEN
+        if (evmObservation.kind === 'NOT_FUNDED_PROVEN') {
+          return this.markRecoveryRequired(
+            executionId,
+            'CRITICAL_INVARIANT_VIOLATION: Lightning is SETTLED but Base HTLC was proven NOT_FUNDED',
+            'CROSS_RAIL_INVARIANT_VIOLATION'
+          );
+        }
+
+        // CASE D: Lightning = SETTLED and Base = REFUNDED
+        if (evmObservation.kind === 'REFUNDED' || evmState?.refunded === true) {
+          return this.markRecoveryRequired(
+            executionId,
+            'CRITICAL_INVARIANT_VIOLATION: Lightning is SETTLED but Base HTLC is REFUNDED',
+            'CROSS_RAIL_INVARIANT_VIOLATION'
+          );
+        }
+
+        // PENDING / INCOMPLETE
+        return this.markRecoveryRequired(
           executionId,
-          {
-            state: SovereignAtomicState.COMPLETED,
-            holdInvoice: { ...observedInvoice!, state: 'SETTLED' },
-            recoveryRequired: false,
-            failureReason: undefined,
-          },
-          { reason: 'RECONCILED_FROM_AUTHORITATIVE_LND_SETTLED' }
+          'Lightning is SETTLED but Base HTLC state is not completed',
+          'CROSS_RAIL_LN_SETTLED_BASE_INCOMPLETE'
         );
       }
 
       // CASE 2: Base HTLC is CLAIMED on-chain
       if (evmState && evmState.completed) {
+        // CASE F: Lightning = CANCELED (or NOT_FOUND) and Base = CLAIMED
+        if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
+          return this.markRecoveryRequired(
+            executionId,
+            `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but Lightning invoice is ${lightningObservation.kind === 'NOT_FOUND' ? 'NOT_FOUND' : 'CANCELED'}`,
+            'CROSS_RAIL_INVARIANT_VIOLATION'
+          );
+        }
+
         if (lnState === 'ACCEPTED') {
           // If we have claim evidence or can extract it, settle LND
           if (record.evmClaimTxHash) {
@@ -1383,6 +1433,8 @@ export class AtomicCoordinator {
             state: SovereignAtomicState.REFUNDED,
             reservationStatus: 'RELEASED',
             holdInvoice: { ...record.holdInvoice!, state: 'CANCELED', canceledAt: new Date() },
+            recoveryRequired: false,
+            failureReason: undefined,
           },
           { reason: 'RECONCILED_FROM_AUTHORITATIVE_EVM_REFUNDED' }
         );
@@ -1390,6 +1442,15 @@ export class AtomicCoordinator {
 
       // CASE 4: Base HTLC is LOCKED (funded) on-chain
       if (evmState && evmState.funded && !evmState.completed && !evmState.refunded) {
+        // CASE G: Lightning = CANCELED (or NOT_FOUND) and Base = FUNDED / LOCKED
+        if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
+          return this.markRecoveryRequired(
+            executionId,
+            `CRITICAL_INVARIANT_VIOLATION: Base HTLC is FUNDED but Lightning invoice is ${lightningObservation.kind === 'NOT_FOUND' ? 'NOT_FOUND' : 'CANCELED'}; reservation retained`,
+            'CROSS_RAIL_INVARIANT_VIOLATION'
+          );
+        }
+
         if (evmState.blockTimestamp >= evmState.timelock) {
           // Timelock expired -> resume refund
           try {

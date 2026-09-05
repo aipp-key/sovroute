@@ -380,6 +380,13 @@ describe('PHASE 5B — END-TO-END COORDINATOR RECOVERY & CROSS-RAIL RELIABILITY'
       await coordinator.onLightningHoldDetected(record.id);
       await coordinator.fundEvmHtlc(record.id);
 
+      // Client claims EVM HTLC onchain
+      await evm.claimHtlc({
+        swapKey: record.evmSwapKey!,
+        preimage: secret,
+        destination: '0xclient9',
+      });
+
       // Settle invoice directly on LND to simulate remote success before local DB write
       await lightning.settleHoldInvoice(secret);
 
