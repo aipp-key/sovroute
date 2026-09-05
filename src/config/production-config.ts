@@ -15,6 +15,7 @@ import {
   OFFICIAL_BASE_MAINNET_USDC_ADDRESS,
 } from '../atomic/evm/base-guard.ts';
 import type { BaseFinalityPolicy } from '../atomic/coordinator/coordinator.ts';
+import type { BaseInventoryReconciliationPolicy } from '../atomic/types.ts';
 
 export class ProductionConfigError extends Error {
   constructor(message: string) {
@@ -46,6 +47,7 @@ export interface EvmConfig {
   htlcAddress: string;
   usdcAddress: string;
   finalityPolicy: BaseFinalityPolicy;
+  reconciliationPolicy: BaseInventoryReconciliationPolicy;
   operationalPrivateKey?: string | undefined;
 }
 
@@ -151,6 +153,9 @@ export class ProductionConfigValidator {
     if (!config.evm.htlcAddress || !/^0x[0-9a-fA-F]{40}$/.test(config.evm.htlcAddress)) {
       throw new ProductionConfigError(`Invalid EVM HTLC contract address: "${config.evm.htlcAddress}".`);
     }
+    if (config.evm.htlcAddress.toLowerCase() === '0x0000000000000000000000000000000000000000') {
+      throw new ProductionConfigError('Zero EVM HTLC contract address is forbidden.');
+    }
     if (usdcAddr !== OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase()) {
       throw new ProductionConfigError(
         `Invalid USDC token address: "${config.evm.usdcAddress}". Must match official Base Sepolia test USDC: ${OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS}.`
@@ -162,11 +167,48 @@ export class ProductionConfigValidator {
       throw new ProductionConfigError('Missing explicit Base finalityPolicy in EVM configuration.');
     }
     if (
-      typeof config.evm.finalityPolicy.requiredConfirmations !== 'number' ||
+      !Number.isInteger(config.evm.finalityPolicy.requiredConfirmations) ||
       config.evm.finalityPolicy.requiredConfirmations < 2
     ) {
       throw new ProductionConfigError(
         `Base Sepolia finality policy requires at least 2 confirmations. Got: ${config.evm.finalityPolicy.requiredConfirmations}`
+      );
+    }
+    if (!config.evm.finalityPolicy.policyTag?.trim()) {
+      throw new ProductionConfigError('Base finality policy requires a non-empty policyTag.');
+    }
+
+    // 5.5. EXPLICIT INVENTORY RECONCILIATION POLICY ENFORCEMENT (FB-4)
+    if (!config.evm.reconciliationPolicy) {
+      throw new ProductionConfigError('Missing explicit Base reconciliationPolicy in EVM configuration.');
+    }
+    const reconPolicy = config.evm.reconciliationPolicy;
+    if (typeof reconPolicy !== 'object' || reconPolicy === null) {
+      throw new ProductionConfigError('reconciliationPolicy must be an object.');
+    }
+    if (!Number.isFinite(reconPolicy.maxFreshnessMs) || reconPolicy.maxFreshnessMs <= 0) {
+      throw new ProductionConfigError(
+        `reconciliationPolicy.maxFreshnessMs must be a positive number. Got: ${reconPolicy.maxFreshnessMs}`
+      );
+    }
+    if (!Number.isInteger(reconPolicy.requiredConfirmations) || reconPolicy.requiredConfirmations < 2) {
+      throw new ProductionConfigError(
+        `reconciliationPolicy.requiredConfirmations must be at least 2. Got: ${reconPolicy.requiredConfirmations}`
+      );
+    }
+    if (!Number.isInteger(reconPolicy.reorgLagTolerance) || reconPolicy.reorgLagTolerance < 0) {
+      throw new ProductionConfigError(
+        `reconciliationPolicy.reorgLagTolerance must be a non-negative number. Got: ${reconPolicy.reorgLagTolerance}`
+      );
+    }
+    if (reconPolicy.failClosedOnDeficit !== true) {
+      throw new ProductionConfigError(
+        'reconciliationPolicy.failClosedOnDeficit must be explicitly true.'
+      );
+    }
+    if (reconPolicy.requiredConfirmations !== config.evm.finalityPolicy.requiredConfirmations) {
+      throw new ProductionConfigError(
+        'reconciliationPolicy.requiredConfirmations must equal finalityPolicy.requiredConfirmations.'
       );
     }
 

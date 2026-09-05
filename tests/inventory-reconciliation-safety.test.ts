@@ -79,7 +79,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       // Operator wallet originally had 100 USDC.
       // 40 USDC was funded into an onchain HTLC. Onchain wallet now has 60 USDC.
       fakeEvm.setWalletBalance(defaultToken, 60_000_000n, 60_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -101,7 +101,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 1.2: Settlement of committed HTLC leaves W_safe intact without duplicate reduction', async () => {
       fakeEvm.setWalletBalance(defaultToken, 50_000_000n, 50_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -130,7 +130,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-2: Zero-Balance Boot Safety', () => {
     it('Scenario 2.1: Router boots cleanly with 0 balance and rejects reservations fail-closed', async () => {
       fakeEvm.setWalletBalance(defaultToken, 0n, 0n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -153,7 +153,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-3: Freshness Staleness Rejection (>60s)', () => {
     it('Scenario 3.1: Snapshot older than maxFreshnessMs is marked DEGRADED', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -175,7 +175,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   // =========================================================================
   describe('REC-4 & REC-5: Boot State and Phase Order', () => {
     it('Scenario 4.1: Reconciler starts NOT_READY before boot sequence', () => {
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -187,7 +187,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 5.1: Successful boot transitions NOT_READY -> RECONCILING -> READY', async () => {
       fakeEvm.setWalletBalance(defaultToken, 50_000_000n, 50_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -206,7 +206,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-6: Idempotent Replay of Same Block', () => {
     it('Scenario 6.1: Repeated reconciliation of same block produces identical state', async () => {
       fakeEvm.setWalletBalance(defaultToken, 75_000_000n, 75_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -228,7 +228,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 7.1: Unfinalized deposit (latest > finalized) restricts W_safe to finalized', async () => {
       // 150 latest, 100 finalized -> W_safe must be 100
       fakeEvm.setWalletBalance(defaultToken, 150_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -245,7 +245,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 8.1: Reorg / withdrawal (latest < finalized) immediately restricts W_safe to latest', async () => {
       // 70 latest, 100 finalized -> W_safe must be 70
       fakeEvm.setWalletBalance(defaultToken, 70_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -263,7 +263,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-9: Token / Chain Validation Failure', () => {
     it('Scenario 9.1: Chain ID mismatch halts boot with NOT_READY', async () => {
       fakeEvm.setChainValidationResult(false, 'Chain ID mismatch: expected 84532, got 1');
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -277,7 +277,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 9.2: Token contract validation failure halts boot', async () => {
       fakeEvm.setTokenValidationResult(false, 'Contract bytecode does not match canonical Circle USDC');
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -296,7 +296,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-10, REC-11, REC-12: Deficit Lifecycle', () => {
     it('Scenario 10.1: W_safe < R transitions reconciler immediately to DEFICIT', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -317,7 +317,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 11.1: DEFICIT state blocks new reservations and coordinator preparation', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -356,7 +356,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 12.1: Deposit recovery restores DEFICIT back to READY', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -386,7 +386,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-13: Ambiguous Funding Intent (P)', () => {
     it('Scenario 13.1: Pending funding intents P reduce Safe Headroom', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -506,7 +506,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         },
       };
 
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: throwingProvider as any,
         defaultTokenAddress: defaultToken,
@@ -525,7 +525,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-16: Concurrent Reservations Under Atomic Headroom Check', () => {
     it('Scenario 16.1: Concurrent reservations under BEGIN IMMEDIATE strictly respect Safe Headroom', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -587,7 +587,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       // Wallet receives the 40 USDC refund onchain -> wallet balance becomes 90 USDC
       fakeEvm.setWalletBalance(defaultToken, 90_000_000n, 90_000_000n);
 
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -629,7 +629,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   describe('REC-20: Clean Shutdown & Restart Preserves State', () => {
     it('Scenario 20.1: SQLite persistence survives process restart and retains snapshots', async () => {
       fakeEvm.setWalletBalance(defaultToken, 120_000_000n, 120_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -655,7 +655,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
   // =========================================================================
   describe('Adversarial Edge Cases & Stress Scenarios (23-40)', () => {
     it('Scenario 23: Direct reservation attempt on unbooted reconciler throws InventoryNotReadyError', async () => {
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -670,7 +670,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 24: Zero finalized balance with large unfinalized latest balance has 0 safe capacity', async () => {
       fakeEvm.setWalletBalance(defaultToken, 1_000_000_000n, 0n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -683,7 +683,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 25: RPC returning null code for USDC contract address fails closed', async () => {
       fakeEvm.setTokenValidationResult(false, 'USDC contract code is empty at configured address');
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -696,7 +696,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 26: Re-reconciliation on demand when freshness expired restores READY', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -714,7 +714,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 27: Stale snapshot with RPC failure prevents quote/reservation fail-closed', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -748,7 +748,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 29: Multiple pending funding intents accumulate into P', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -815,7 +815,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
     it('Scenario 30: Resolved intent (success) does not inflate P after HTLC is onchain', async () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
@@ -898,7 +898,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
 
       (fakeEvm as any).getContractHtlcState = async () => ({ status: 1 });
 
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,

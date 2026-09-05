@@ -91,6 +91,51 @@ export function isTransportFailure(err: any): boolean {
   );
 }
 
+export const ReceiptObservationClassification = {
+  RECEIPT_NOT_FOUND: 'RECEIPT_NOT_FOUND',
+  RPC_UNAVAILABLE: 'RPC_UNAVAILABLE',
+  RPC_PROTOCOL_ERROR: 'RPC_PROTOCOL_ERROR',
+  UNKNOWN: 'UNKNOWN',
+} as const;
+
+export type ReceiptObservationClassification =
+  (typeof ReceiptObservationClassification)[keyof typeof ReceiptObservationClassification];
+
+export class EvmTransactionObservationUnknownError extends Error {
+  public readonly code = 'EVM_TRANSACTION_OBSERVATION_UNKNOWN';
+  public readonly classification: Exclude<ReceiptObservationClassification, 'RECEIPT_NOT_FOUND'>;
+  public readonly cause: unknown;
+
+  constructor(
+    classification: Exclude<ReceiptObservationClassification, 'RECEIPT_NOT_FOUND'>,
+    cause: unknown
+  ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`EVM_TRANSACTION_OBSERVATION_UNKNOWN: ${classification}: ${detail}`);
+    this.name = 'EvmTransactionObservationUnknownError';
+    this.classification = classification;
+    this.cause = cause;
+  }
+}
+
+/** Receipt absence is authoritative only when viem reports its typed error. */
+export function classifyReceiptObservationError(err: unknown): ReceiptObservationClassification {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    if (current instanceof Error && current.name === 'TransactionReceiptNotFoundError') {
+      return ReceiptObservationClassification.RECEIPT_NOT_FOUND;
+    }
+    current = typeof current === 'object' && current !== null && 'cause' in current
+      ? (current as { cause?: unknown }).cause
+      : undefined;
+  }
+  if (isTransportFailure(err)) return ReceiptObservationClassification.RPC_UNAVAILABLE;
+  if (err instanceof Error && (err.name === 'RpcRequestError' || err.name === 'InvalidInputRpcError')) {
+    return ReceiptObservationClassification.RPC_PROTOCOL_ERROR;
+  }
+  return ReceiptObservationClassification.UNKNOWN;
+}
+
 export interface BaseTransactionManagerConfig {
   persistence: SqlitePersistence;
   publicClient: PublicClient;
@@ -565,12 +610,16 @@ export class BaseTransactionManager {
             };
           }
         }
-      } catch (err: any) {
-        // Receipt not found (still pending) is expected
+      } catch (err: unknown) {
+        const classification = classifyReceiptObservationError(err);
+        if (classification !== ReceiptObservationClassification.RECEIPT_NOT_FOUND) {
+          throw new EvmTransactionObservationUnknownError(classification, err);
+        }
       }
     }
 
-    // No receipt found yet. Check if nonce was consumed by an external transaction!
+    // An advanced account nonce is diagnostic evidence only. It cannot prove
+    // which transaction consumed the nonce or the fate of this intent.
     if (intent.nonce !== null && intent.nonce !== undefined) {
       try {
         const onChainMinedNonce = await this.publicClient.getTransactionCount({
@@ -579,17 +628,17 @@ export class BaseTransactionManager {
         });
 
         if (onChainMinedNonce > intent.nonce) {
-          // On-chain nonce has advanced past this intent's nonce, but none of our attempts mined!
-          const reason = `On-chain nonce (${onChainMinedNonce}) advanced past reserved nonce (${intent.nonce}) without our transaction mining`;
-          this.persistence.markEvmNonceConflict(intentId, reason);
           return {
             intentId,
-            status: EvmLogicalIntentState.NONCE_CONFLICT,
-            reason,
+            status: EvmLogicalIntentState.PENDING,
+            reason: `NONCE_ADVANCED_OUTCOME_UNKNOWN: On-chain nonce (${onChainMinedNonce}) advanced past reserved nonce (${intent.nonce}); no terminal fate inferred`,
           };
         }
-      } catch {
-        // Ignore RPC read error during reconciliation
+      } catch (err: unknown) {
+        const classification = isTransportFailure(err)
+          ? ReceiptObservationClassification.RPC_UNAVAILABLE
+          : ReceiptObservationClassification.UNKNOWN;
+        throw new EvmTransactionObservationUnknownError(classification, err);
       }
     }
 
@@ -632,18 +681,16 @@ export class BaseTransactionManager {
       // Check for unbroadcast prepared attempt (Crash Point 4)
       const unbroadcast = attempts.find((a) => a.status === EvmPhysicalAttemptStatus.PREPARED);
       if (unbroadcast) {
-        try {
-          const { rawSignedTx } = await this.signAttemptTransaction(intent, unbroadcast, unbroadcast.data);
-          const computedHash = keccak256(rawSignedTx);
-          if (computedHash.toLowerCase() !== unbroadcast.txHash.toLowerCase()) {
-            throw new Error(
-              `DETERMINISTIC_SIGNATURE_MISMATCH: Reconstructed transaction hash ${computedHash} does not match persisted hash ${unbroadcast.txHash}`
-            );
-          }
-          await this.broadcastAttempt(unbroadcast, rawSignedTx);
-        } catch {
-          // Reconciler will handle if already in mempool
+        const { rawSignedTx } = await this.signAttemptTransaction(intent, unbroadcast, unbroadcast.data);
+        const computedHash = keccak256(rawSignedTx);
+        if (computedHash.toLowerCase() !== unbroadcast.txHash.toLowerCase()) {
+          throw new Error(
+            `DETERMINISTIC_SIGNATURE_MISMATCH: Reconstructed transaction hash ${computedHash} does not match persisted hash ${unbroadcast.txHash}`
+          );
         }
+        // broadcastAttempt explicitly tolerates only an exact already-known
+        // duplicate. Every other recovery error propagates fail-closed.
+        await this.broadcastAttempt(unbroadcast, rawSignedTx);
       }
 
       const outcome = await this.reconcileIntent(intent.id);

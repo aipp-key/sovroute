@@ -266,7 +266,7 @@ describe('PHASE 5A — BASE TRANSACTION RELIABILITY SUITE', () => {
       restoredDb.close();
     });
 
-    it('2.4 External transaction conflict marks NONCE_CONFLICT without silent overwrite', async () => {
+    it('2.4 Advanced nonce without explicit conflict evidence remains PENDING/UNKNOWN', async () => {
       const swapKey = `swap-conflict-${randomUUID()}`;
       const calldata = '0x11223344';
       const intent = persistence.getOrCreateEvmIntent({
@@ -296,11 +296,12 @@ describe('PHASE 5A — BASE TRANSACTION RELIABILITY SUITE', () => {
       });
 
       const outcome = await txManager.reconcileIntent(intent.id);
-      assert.strictEqual(outcome.status, EvmLogicalIntentState.NONCE_CONFLICT);
+      assert.strictEqual(outcome.status, EvmLogicalIntentState.PENDING);
+      assert.match(outcome.reason ?? '', /NONCE_ADVANCED_OUTCOME_UNKNOWN/);
 
       const reloaded = persistence.getEvmIntentById(intent.id);
-      assert.strictEqual(reloaded?.status, EvmLogicalIntentState.NONCE_CONFLICT);
-      assert.ok(reloaded?.failureReason?.includes('advanced past reserved nonce'));
+      assert.notStrictEqual(reloaded?.status, EvmLogicalIntentState.NONCE_CONFLICT);
+      assert.strictEqual(reloaded?.failureReason, null);
     });
   });
 

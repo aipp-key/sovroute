@@ -78,6 +78,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
             policyTag: 'BASE_SEPOLIA_TEST_POLICY',
             requiredConfirmations: 2,
           },
+          reconciliationPolicy: BASE_SEPOLIA_TEST_POLICY,
           operationalPrivateKey: '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         },
         safety: {
@@ -99,9 +100,10 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
       };
 
       const mockConfig = getValidBootstrapConfig(dbPath);
+      mockConfig.environment = 'test';
 
       await assert.rejects(
-        () => bootstrapProductionRouter(mockConfig, { inventory: plainInventory as any }),
+        () => bootstrapProductionRouter(mockConfig, { _testOverrides: { inventory: plainInventory as any } }),
         (err: any) => err instanceof MissingInventoryError && err.message.includes('IReconciledLiquidityInventory')
       );
     });
@@ -119,9 +121,10 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
       };
 
       const mockConfig = getValidBootstrapConfig(dbPath);
+      mockConfig.environment = 'test';
 
       await assert.rejects(
-        () => bootstrapProductionRouter(mockConfig, { inventory: failingInventory }),
+        () => bootstrapProductionRouter(mockConfig, { _testOverrides: { inventory: failingInventory } }),
         /INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is DEFICIT/
       );
     });
@@ -131,7 +134,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
       const otherPersistence = new SqlitePersistence({ filename: otherDbPath });
 
       try {
-        const reconciler = new ChainInventoryReconciler({
+        const reconciler = ChainInventoryReconciler.createForTesting({
           persistence: otherPersistence,
           capacityProvider: fakeEvm,
           defaultTokenAddress: canonicalUsdc,
@@ -139,9 +142,10 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
         const mismatchedInventory = new SqliteLiquidityInventory(otherPersistence, { reconciler });
 
         const mockConfig = getValidBootstrapConfig(dbPath);
+        mockConfig.environment = 'test';
 
         await assert.rejects(
-          () => bootstrapProductionRouter(mockConfig, { inventory: mismatchedInventory }),
+          () => bootstrapProductionRouter(mockConfig, { _testOverrides: { inventory: mismatchedInventory } }),
           /INVENTORY_PERSISTENCE_MISMATCH/
         );
       } finally {
@@ -163,7 +167,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
         verifyChainAndToken: async () => ({ valid: true }),
       };
 
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: mockCapacityProvider as any,
         defaultTokenAddress: canonicalUsdc,
@@ -220,7 +224,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
         },
       };
 
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: brokenProvider as any,
         defaultTokenAddress: canonicalUsdc,
@@ -323,7 +327,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
   describe('FF-7: Phase 3.5 Funding Intent Active Startup Reconciliation', () => {
     it('7.1: Boot reconciliation reconciles mined FUND intent: commits reservation', async () => {
       fakeEvm.setWalletBalance(canonicalUsdc, 100_000_000n, 100_000_000n);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: canonicalUsdc,
@@ -389,7 +393,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
       assert.strictEqual(result.valid, false);
       assert.match(result.reason ?? '', /TOKEN_CONTRACT_MISMATCH/);
 
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: counterfeitToken,
@@ -436,7 +440,7 @@ describe('BASE INVENTORY RECONCILIATION — FAIL-CLOSED HARDENING (FF-1 through 
     });
 
     it('10.2: Custom policy overrides are cleanly respected by reconciler', () => {
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: canonicalUsdc,

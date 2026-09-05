@@ -33,6 +33,7 @@ import type {
   IReconciledLiquidityInventory,
   ILiquidityInventory,
 } from '../src/atomic/types.ts';
+import { BASE_SEPOLIA_TEST_POLICY } from '../src/atomic/types.ts';
 
 const canonicalUsdc = OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase();
 
@@ -69,6 +70,7 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
           policyTag: 'BASE_SEPOLIA_TEST_POLICY',
           requiredConfirmations: 2,
         },
+        reconciliationPolicy: BASE_SEPOLIA_TEST_POLICY,
         operationalPrivateKey: '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       },
       safety: {
@@ -81,16 +83,17 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
     };
   }
 
-  it('BOOT-SAFE-01: Missing inventory option throws MissingInventoryError fail-closed', async () => {
+  it('BOOT-SAFE-01: External inventory option on bootstrap is rejected fail-closed', async () => {
     const config = getValidBootstrapConfig(dbPath);
     await assert.rejects(
-      () => bootstrapProductionRouter(config, {} as any),
-      (err: any) => err instanceof MissingInventoryError
+      () => bootstrapProductionRouter(config, { inventory: {} } as any),
+      (err: any) => err.message.includes('External inventory injection is strictly prohibited')
     );
   });
 
   it('BOOT-SAFE-02: Plain ILiquidityInventory lacking reconcileOnBoot throws MissingInventoryError', async () => {
     const config = getValidBootstrapConfig(dbPath);
+    config.environment = 'test';
     const plainInventory: ILiquidityInventory = {
       reserve: async () => ({ reservationId: 'r1', reserved: true }),
       release: async () => {},
@@ -99,13 +102,14 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
     };
 
     await assert.rejects(
-      () => bootstrapProductionRouter(config, { inventory: plainInventory as any }),
+      () => bootstrapProductionRouter(config, { _testOverrides: { inventory: plainInventory as any } }),
       (err: any) => err instanceof MissingInventoryError && err.message.includes('IReconciledLiquidityInventory')
     );
   });
 
   it('BOOT-SAFE-03: Boot reconciliation returning DEFICIT aborts bootstrap fail-closed', async () => {
     const config = getValidBootstrapConfig(dbPath);
+    config.environment = 'test';
     const deficitInventory: IReconciledLiquidityInventory = {
       reserve: async () => ({ reservationId: 'r1', reserved: true }),
       release: async () => {},
@@ -118,13 +122,14 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
     };
 
     await assert.rejects(
-      () => bootstrapProductionRouter(config, { inventory: deficitInventory }),
+      () => bootstrapProductionRouter(config, { _testOverrides: { inventory: deficitInventory } }),
       /INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is DEFICIT/
     );
   });
 
   it('BOOT-SAFE-04: Boot reconciliation returning UNKNOWN aborts bootstrap fail-closed', async () => {
     const config = getValidBootstrapConfig(dbPath);
+    config.environment = 'test';
     const unknownInventory: IReconciledLiquidityInventory = {
       reserve: async () => ({ reservationId: 'r1', reserved: true }),
       release: async () => {},
@@ -137,20 +142,21 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
     };
 
     await assert.rejects(
-      () => bootstrapProductionRouter(config, { inventory: unknownInventory }),
+      () => bootstrapProductionRouter(config, { _testOverrides: { inventory: unknownInventory } }),
       /INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is UNKNOWN/
     );
   });
 
   it('BOOT-SAFE-05: SqliteLiquidityInventory bound to mismatched persistence aborts bootstrap fail-closed', async () => {
     const config = getValidBootstrapConfig(dbPath);
+    config.environment = 'test';
     const otherDbPath = join(tmpdir(), 'other-boot-db-' + randomUUID() + '.db');
     const otherPersistence = new SqlitePersistence({ filename: otherDbPath });
 
     try {
       const fakeEvm = new FakeEvmAtomicBackend();
       fakeEvm.setPersistence(otherPersistence);
-      const reconciler = new ChainInventoryReconciler({
+      const reconciler = ChainInventoryReconciler.createForTesting({
         persistence: otherPersistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: canonicalUsdc,
@@ -158,7 +164,7 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
       const mismatchedInventory = new SqliteLiquidityInventory(otherPersistence, { reconciler });
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: mismatchedInventory }),
+        () => bootstrapProductionRouter(config, { _testOverrides: { inventory: mismatchedInventory } }),
         /INVENTORY_PERSISTENCE_MISMATCH/
       );
     } finally {
@@ -172,7 +178,7 @@ describe('PRODUCTION BOOTSTRAP SAFETY & FAIL-CLOSED BOUNDARIES', () => {
     badConfig.evm.chainId = 1; // Ethereum mainnet forbidden
 
     await assert.rejects(
-      () => bootstrapProductionRouter(badConfig, { inventory: {} as any })
+      () => bootstrapProductionRouter(badConfig)
     );
 
     assert.strictEqual(existsSync(dbPath), false, 'Database file must not exist after invalid config abort');

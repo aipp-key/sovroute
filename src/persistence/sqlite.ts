@@ -83,6 +83,11 @@ export class SqlitePersistence {
     return this.allowLegacyFallback;
   }
 
+  public checkIntegrity(): boolean {
+    const rows = this.db.prepare('PRAGMA integrity_check;').all() as Array<{ integrity_check?: string }>;
+    return rows.length > 0 && rows.every((row) => row.integrity_check === 'ok');
+  }
+
   private initPragmas(): void {
     try {
       this.db.exec('PRAGMA busy_timeout = 5000;');
@@ -1459,6 +1464,40 @@ export class SqlitePersistence {
     return rows.map((r) => this.mapRowToEvmIntent(r));
   }
 
+  /**
+   * Terminal EVM execution is not terminal cross-rail recovery. Return failed
+   * FUND intents whose linked swap remains economically non-terminal so boot
+   * reconciliation can preserve and surface the obligation.
+   */
+  public getFailedFundIntentsRequiringCrossRailRecovery(chainId: number): EvmLogicalIntent[] {
+    const rows = this.db.prepare(`
+      SELECT i.*
+      FROM evm_transaction_intents i
+      JOIN sovereign_swaps s ON s.evm_swap_key = i.swap_key
+      WHERE i.chain_id = ?
+        AND i.action_type = 'FUND'
+        AND i.status IN ('REVERTED', 'FAILED', 'NONCE_CONFLICT')
+        AND s.state NOT IN ('COMPLETED', 'REFUNDED', 'INVOICE_CANCELED', 'EXPIRED')
+      ORDER BY i.created_at ASC
+    `).all(chainId) as Record<string, unknown>[];
+    return rows.map((row) => this.mapRowToEvmIntent(row));
+  }
+
+  public markEvmIntentConfirmedByChainEvidence(intentId: string, canonicalTxHash?: Hex): void {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE evm_transaction_intents
+      SET status = ?,
+          canonical_tx_hash = COALESCE(?, canonical_tx_hash),
+          failure_reason = NULL,
+          updated_at = ?
+      WHERE id = ? AND action_type = 'FUND'
+    `).run(EvmLogicalIntentState.CONFIRMED, canonicalTxHash ?? null, now, intentId);
+    if (result.changes !== 1) {
+      throw new Error(`EVM_INTENT_NOT_FOUND: Cannot converge FUND intent ${intentId}`);
+    }
+  }
+
   private mapRowToEvmIntent(row: Record<string, unknown>): EvmLogicalIntent {
     return {
       id: row.id as string,
@@ -1768,9 +1807,9 @@ export class SqlitePersistence {
       setClauses.push('recovery_required = ?');
       values.push(updates.recoveryRequired ? 1 : 0);
     }
-    if (updates.failureReason !== undefined) {
+    if ('failureReason' in updates) {
       setClauses.push('failure_reason = ?');
-      values.push(updates.failureReason);
+      values.push(updates.failureReason ?? null);
     }
     if (updates.retryCount !== undefined) {
       setClauses.push('retry_count = ?');
@@ -1793,6 +1832,35 @@ export class SqlitePersistence {
     }
 
     return updatedRecord;
+  }
+
+  /** Atomically aligns RECOVERY_REQUIRED state, health flag, reason, and audit row. */
+  public markSovereignRecoveryRequired(
+    id: string,
+    failureReason: string,
+    transitionReason: string
+  ): SovereignExecutionRecord {
+    this.beginImmediateWithRetry();
+    try {
+      const existing = this.getSovereignSwap(id);
+      if (!existing) throw new Error(`Sovereign swap ${id} not found for recovery escalation`);
+      const updated = this.updateSovereignSwap(
+        id,
+        {
+          state: SovereignAtomicState.RECOVERY_REQUIRED,
+          recoveryRequired: true,
+          failureReason,
+        },
+        { reason: transitionReason }
+      );
+      this.db.exec('COMMIT');
+      return updated;
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
   }
 
   public claimSovereignAction(
@@ -2244,17 +2312,33 @@ export class SqlitePersistence {
     }
   }
 
-  public commitLiquidityReservation(reservationId: string): void {
+  private transitionLiquidityReservation(
+    reservationId: string,
+    allowedFrom: readonly string[],
+    nextStatus: LiquidityReservationStatus
+  ): void {
     this.beginImmediateWithRetry();
     try {
       const row = this.db
         .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
         .get(reservationId) as { status: string } | undefined;
-      if (row && row.status === 'RESERVED') {
+      if (!row) {
+        this.db.exec('COMMIT');
+        return;
+      }
+      if (allowedFrom.includes(row.status)) {
         const now = new Date().toISOString();
         this.db
           .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
-          .run('COMMITTED', now, reservationId);
+          .run(nextStatus, now, reservationId);
+        this.db
+          .prepare('UPDATE sovereign_swaps SET reservation_status = ?, updated_at = ? WHERE reservation_id = ?')
+          .run(nextStatus, now, reservationId);
+      } else if (row.status === nextStatus) {
+        // Idempotent replay also heals a legacy split-brain swap row.
+        this.db
+          .prepare('UPDATE sovereign_swaps SET reservation_status = ?, updated_at = ? WHERE reservation_id = ?')
+          .run(nextStatus, new Date().toISOString(), reservationId);
       }
       this.db.exec('COMMIT');
     } catch (err) {
@@ -2263,48 +2347,20 @@ export class SqlitePersistence {
       } catch {}
       throw err;
     }
+  }
+
+  public commitLiquidityReservation(reservationId: string): void {
+    this.transitionLiquidityReservation(reservationId, ['RESERVED'], 'COMMITTED');
   }
 
   public releaseLiquidityReservation(reservationId: string): void {
-    this.beginImmediateWithRetry();
-    try {
-      const row = this.db
-        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
-        .get(reservationId) as { status: string } | undefined;
-      if (row && row.status === 'RESERVED') {
-        const now = new Date().toISOString();
-        this.db
-          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
-          .run('RELEASED', now, reservationId);
-      }
-      this.db.exec('COMMIT');
-    } catch (err) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {}
-      throw err;
-    }
+    this.transitionLiquidityReservation(reservationId, ['RESERVED'], 'RELEASED');
   }
 
   public restoreRefundLiquidityReservation(reservationId: string): void {
-    this.beginImmediateWithRetry();
-    try {
-      const row = this.db
-        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
-        .get(reservationId) as { status: string } | undefined;
-      if (row && row.status === 'COMMITTED') {
-        const now = new Date().toISOString();
-        this.db
-          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
-          .run('RELEASED', now, reservationId);
-      }
-      this.db.exec('COMMIT');
-    } catch (err) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {}
-      throw err;
-    }
+    // A proven on-chain refund may be discovered after a crash that occurred
+    // before the local RESERVED -> COMMITTED write.
+    this.transitionLiquidityReservation(reservationId, ['COMMITTED', 'RESERVED'], 'RELEASED');
   }
 
   public getLiquidityReservation(reservationId: string): LiquidityReservationRecord | null {
@@ -2336,24 +2392,7 @@ export class SqlitePersistence {
   }
 
   public settleLiquidityReservation(reservationId: string): void {
-    this.beginImmediateWithRetry();
-    try {
-      const row = this.db
-        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
-        .get(reservationId) as { status: string } | undefined;
-      if (row && (row.status === 'COMMITTED' || row.status === 'RESERVED')) {
-        const now = new Date().toISOString();
-        this.db
-          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
-          .run('SETTLED', now, reservationId);
-      }
-      this.db.exec('COMMIT');
-    } catch (err) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {}
-      throw err;
-    }
+    this.transitionLiquidityReservation(reservationId, ['COMMITTED', 'RESERVED'], 'SETTLED');
   }
 
   public recordChainInventorySnapshot(snapshot: ChainInventorySnapshot): void {

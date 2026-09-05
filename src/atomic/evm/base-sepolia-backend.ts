@@ -55,6 +55,11 @@ import { SqlitePersistence } from '../../persistence/sqlite.ts';
 import { BaseTransactionManager } from './transaction-manager.ts';
 import type { BaseTransactionPolicy } from './transaction-types.ts';
 
+const TEST_PUBLIC_CLIENT = Symbol('BASE_SEPOLIA_TEST_PUBLIC_CLIENT');
+type InternalBaseSepoliaBackendConfig = BaseSepoliaBackendConfig & {
+  [TEST_PUBLIC_CLIENT]?: any;
+};
+
 const ERC20_ABI = parseAbi([
   'function name() view returns (string)',
   'function symbol() view returns (string)',
@@ -74,6 +79,7 @@ export interface BaseSepoliaBackendConfig {
   tokenAddress?: `0x${string}`;
   operatorPrivateKey?: Hex;
   requiredConfirmations?: number;
+  finalityPolicy?: { policyTag: string; requiredConfirmations: number };
   persistence?: SqlitePersistence;
   transactionPolicy?: Partial<BaseTransactionPolicy>;
   /**
@@ -87,11 +93,8 @@ export interface BaseSepoliaBackendConfig {
 
 export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapacityProvider {
   readonly backendName = 'BaseSepoliaAtomicBackend';
-  readonly chainId = BASE_SEPOLIA_CHAIN_ID;
-  public readonly finalityPolicy = {
-    policyTag: 'BASE_SEPOLIA_TEST_POLICY',
-    requiredConfirmations: 2,
-  };
+  readonly chainId: number;
+  public readonly finalityPolicy: { policyTag: string; requiredConfirmations: number };
 
   private publicClient: any;
   private operatorWallet: WalletClient | undefined;
@@ -118,12 +121,43 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
 
   private initialized = false;
 
+  /** Test-only transport seam; production configuration and object construction remain unchanged. */
+  public static createForTesting(
+    config: BaseSepoliaBackendConfig,
+    publicClient: any
+  ): BaseSepoliaAtomicBackend {
+    return new BaseSepoliaAtomicBackend({
+      ...config,
+      [TEST_PUBLIC_CLIENT]: publicClient,
+    } as InternalBaseSepoliaBackendConfig);
+  }
+
   constructor(config: BaseSepoliaBackendConfig = {}) {
     const rootDir = process.cwd();
     const rpcUrl = config.rpcUrl ?? 'https://sepolia.base.org';
     this.persistence = config.persistence;
+    this.chainId = config.chainId ?? BASE_SEPOLIA_CHAIN_ID;
+    const configuredFinality = config.finalityPolicy ?? {
+      policyTag: 'BASE_SEPOLIA_TEST_POLICY',
+      requiredConfirmations: config.requiredConfirmations ?? 2,
+    };
+    if (
+      config.requiredConfirmations !== undefined &&
+      config.requiredConfirmations !== configuredFinality.requiredConfirmations
+    ) {
+      throw new Error('FINALITY_POLICY_MISMATCH: Backend confirmation settings disagree');
+    }
+    if (
+      config.transactionPolicy?.requiredConfirmations !== undefined &&
+      config.transactionPolicy.requiredConfirmations !== configuredFinality.requiredConfirmations
+    ) {
+      throw new Error('FINALITY_POLICY_MISMATCH: Transaction manager confirmation settings disagree');
+    }
+    this.requiredConfirmations = configuredFinality.requiredConfirmations;
+    this.finalityPolicy = { ...configuredFinality };
 
-    this.publicClient = createPublicClient({
+    const internalConfig = config as InternalBaseSepoliaBackendConfig;
+    this.publicClient = internalConfig[TEST_PUBLIC_CLIENT] ?? createPublicClient({
       chain: baseSepolia,
       transport: http(rpcUrl),
       cacheTime: 0,
@@ -143,8 +177,11 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
           persistence: config.persistence,
           publicClient: this.publicClient,
           account,
-          chainId: config.chainId ?? BASE_SEPOLIA_CHAIN_ID,
-          policy: config.transactionPolicy,
+          chainId: this.chainId,
+          policy: {
+            ...config.transactionPolicy,
+            requiredConfirmations: this.requiredConfirmations,
+          },
         });
       } else {
         // FAIL CLOSED: Silent unmanaged execution is strictly prohibited
@@ -158,8 +195,6 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
         this.unsafeDirectExecutionForTests = true;
       }
     }
-
-    this.requiredConfirmations = config.requiredConfirmations ?? 2;
 
     // Load compiled contract artifacts
     const artifactsDir = join(rootDir, 'artifacts', 'contracts');
@@ -181,6 +216,14 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
     return this.transactionManager;
   }
 
+  public getRequiredConfirmations(): number {
+    return this.requiredConfirmations;
+  }
+
+  public getPersistence(): SqlitePersistence | undefined {
+    return this.persistence;
+  }
+
   public isUnsafeDirectExecutionEnabled(): boolean {
     return this.unsafeDirectExecutionForTests;
   }
@@ -196,8 +239,9 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
         count++;
       }
       return count;
-    } catch {
-      return 0;
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`BINDING_REHYDRATION_FAILED: ${detail}`);
     }
   }
 
@@ -337,18 +381,13 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
     BaseNetworkGuard.assertBaseSepoliaNetwork(actualChainId);
 
     // 2. Assert canonical Base Sepolia USDC identity
-    let decimals: number | undefined;
-    try {
-      const dec = await this.publicClient.readContract({
-        address: this.tokenAddress,
-        abi: this.tokenAbi,
-        functionName: 'decimals',
-        args: [],
-      });
-      decimals = Number(dec);
-    } catch {
-      // If token not deployed or mock in test environment
-    }
+    const dec = await this.publicClient.readContract({
+      address: this.tokenAddress,
+      abi: this.tokenAbi,
+      functionName: 'decimals',
+      args: [],
+    });
+    const decimals = Number(dec);
     BaseNetworkGuard.assertCanonicalBaseSepoliaUsdc(this.tokenAddress, decimals);
 
     // 3. Assert HTLC contract bytecode if address is set
@@ -462,13 +501,24 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
         functionName: 'getHtlc',
         args: [htlcId],
       });
-      if (existingHtlc && existingHtlc.status === 1) {
+      const existingStatus = typeof existingHtlc?.status === 'bigint'
+        ? Number(existingHtlc.status)
+        : existingHtlc?.status;
+      if (existingStatus === 1) {
         this.swapKeyToHtlcId.set(params.swapKey, htlcId);
         this.htlcIdToSwapKey.set(htlcId, params.swapKey);
         return { txHash: '0x_reconciled_existing_funding', blockNumber: 0, htlcId };
       }
-    } catch {
-      // Not yet funded
+      if (existingStatus !== 0) {
+        throw new Error(
+          `HTLC_EXISTENCE_UNKNOWN: Unexpected or terminal existing HTLC status ${String(existingStatus)}; refusing funding dispatch`
+        );
+      }
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `HTLC_EXISTENCE_UNKNOWN: Pre-funding contract observation failed; refusing duplicate financial dispatch (${detail})`
+      );
     }
 
     // Check balance for gas and tokens
@@ -677,19 +727,42 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
         htlcId = swap.evmHtlcId as `0x${string}`;
         this.swapKeyToHtlcId.set(swapKey, htlcId);
         this.htlcIdToSwapKey.set(htlcId, swapKey);
+      } else if (swap) {
+        const fundIntent = this.persistence.getEvmIntentBySwapKey(swapKey, 'FUND');
+        if (!fundIntent || this.persistence.getEvmAttemptsForIntent(fundIntent.id).length === 0) {
+          // Durable pre-broadcast journal proves no financial dispatch occurred.
+          return {
+            swapKey,
+            funded: false,
+            completed: false,
+            refunded: false,
+            balance: 0n,
+            timelock: 0,
+            blockTimestamp: await this.getBlockTimestamp(),
+          };
+        }
+        if (!this.operatorAddress || !swap.refundLocktime || !swap.tokenAddress || !swap.refundAddress) {
+          throw new Error(
+            `HTLC_BINDING_UNKNOWN: FUND attempt exists for ${swapKey}, but deterministic HTLC inputs are incomplete`
+          );
+        }
+        htlcId = this.computeHtlcId({
+          hashLock: swap.hashLock as Hex,
+          amountUnits: swap.expectedUsdcAmount,
+          tokenAddress: swap.tokenAddress,
+          sender: this.operatorAddress,
+          claimAddress: swap.claimingAddress,
+          refundAddress: swap.refundAddress,
+          refundLocktime: swap.refundLocktime,
+          chainId: this.chainId,
+        });
+        this.swapKeyToHtlcId.set(swapKey, htlcId);
+        this.htlcIdToSwapKey.set(htlcId, swapKey);
       }
     }
 
     if (!htlcId) {
-      return {
-        swapKey,
-        funded: false,
-        completed: false,
-        refunded: false,
-        balance: 0n,
-        timelock: 0,
-        blockTimestamp: await this.getBlockTimestamp(),
-      };
+      throw new Error(`HTLC_BINDING_UNKNOWN: Cannot authoritatively derive HTLC identity for ${swapKey}`);
     }
 
     const storedHtlc: any = await this.publicClient.readContract({
@@ -699,7 +772,12 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
       args: [htlcId],
     });
 
-    const status = storedHtlc.status;
+    const status = typeof storedHtlc?.status === 'bigint'
+      ? Number(storedHtlc.status)
+      : storedHtlc?.status;
+    if (typeof status !== 'number' || !Number.isInteger(status) || ![0, 1, 2, 3].includes(status)) {
+      throw new Error(`HTLC_STATE_UNKNOWN: Malformed contract status ${String(storedHtlc?.status)}`);
+    }
     const funded = status === 1 || status === 2 || status === 3;
     const completed = status === 2;
     const refunded = status === 3;

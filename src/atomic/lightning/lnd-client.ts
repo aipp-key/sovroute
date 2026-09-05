@@ -39,6 +39,18 @@ export interface ILndClient {
   cancelInvoice(paymentHashHex: string): Promise<void>;
 }
 
+export class LndRestError extends Error {
+  public readonly statusCode: number;
+  public readonly responseBody: string;
+
+  constructor(statusCode: number, message: string, responseBody: string) {
+    super(message);
+    this.name = 'LndRestError';
+    this.statusCode = statusCode;
+    this.responseBody = responseBody;
+  }
+}
+
 export class LndClient implements ILndClient {
   private readonly baseUrl: string;
   private readonly agent: https.Agent;
@@ -200,7 +212,7 @@ export class LndClient implements ILndClient {
                 } catch {
                   // Use raw text
                 }
-                reject(new Error(errMessage));
+                reject(new LndRestError(res.statusCode ?? 0, errMessage, rawData));
               }
             } catch (parseErr) {
               reject(parseErr);

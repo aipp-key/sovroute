@@ -32,6 +32,7 @@ import type {
   HoldInvoice,
   HashLock,
   SecretPreimage,
+  EvmHtlcState,
 } from '../types.ts';
 import {
   SovereignAtomicState,
@@ -39,6 +40,7 @@ import {
   InventoryNotReadyError,
   LiquidityDeficitError,
   EvmInventoryUnavailableError,
+  LightningInvoiceNotFoundError,
 } from '../types.ts';
 import {
   LightningSettlementGateError,
@@ -155,6 +157,19 @@ export interface CoordinatorConfig {
   timeSafetyConfig?: Partial<CrossRailTimeSafetyConfig> | undefined;
 }
 
+type LightningRecoveryObservation =
+  | { kind: 'FOUND'; invoice: HoldInvoice }
+  | { kind: 'NOT_FOUND' }
+  | { kind: 'UNKNOWN'; reason: string };
+
+type EvmRecoveryObservation =
+  | { kind: 'FUNDED'; state: EvmHtlcState }
+  | { kind: 'CLAIMED'; state: EvmHtlcState }
+  | { kind: 'REFUNDED'; state: EvmHtlcState }
+  | { kind: 'NOT_FUNDED_PROVEN'; state: EvmHtlcState }
+  | { kind: 'PENDING'; state: EvmHtlcState }
+  | { kind: 'UNKNOWN'; reason: string };
+
 export class AtomicCoordinator {
   private records = new Map<string, SovereignExecutionRecord>();
   private idempotencyIndex = new Map<string, string>();
@@ -187,6 +202,15 @@ export class AtomicCoordinator {
     this.defaultWorkerId = config?.workerId ?? `worker-${randomUUID().slice(0, 8)}`;
     this.leaseMs = config?.leaseMs ?? 60_000;
     this.maxRetries = config?.maxRetries ?? 5;
+
+    const backendFinality = (evm as { finalityPolicy?: BaseFinalityPolicy }).finalityPolicy;
+    if (
+      config?.finalityPolicy &&
+      backendFinality &&
+      config.finalityPolicy.requiredConfirmations !== backendFinality.requiredConfirmations
+    ) {
+      throw new Error('FINALITY_POLICY_MISMATCH: Coordinator and EVM backend policies disagree');
+    }
 
     if (config?.finalityPolicy) {
       this.finalityPolicy = config.finalityPolicy;
@@ -226,6 +250,18 @@ export class AtomicCoordinator {
 
   public getPersistence(): SqlitePersistence {
     return this.persistence;
+  }
+
+  public getEvmBackend(): IEvmAtomicBackend {
+    return this.evm;
+  }
+
+  public getInventory(): ILiquidityInventory {
+    return this.inventory;
+  }
+
+  public getFinalityPolicy(): BaseFinalityPolicy | undefined {
+    return this.finalityPolicy ? { ...this.finalityPolicy } : undefined;
   }
 
   /**
@@ -293,6 +329,19 @@ export class AtomicCoordinator {
         );
       }
       this.syncCache(existing);
+      if (existing.recoveryRequired || existing.state === SovereignAtomicState.RECOVERY_REQUIRED) {
+        throw new Error(
+          `RECOVERY_REQUIRED: Existing swap ${existing.id} has ambiguous external state; prepare retry is forbidden`
+        );
+      }
+      if (
+        existing.state === SovereignAtomicState.INVOICE_CANCELED ||
+        existing.state === SovereignAtomicState.EXPIRED ||
+        existing.state === SovereignAtomicState.REFUNDED ||
+        existing.state === SovereignAtomicState.COMPLETED
+      ) {
+        return existing;
+      }
       if (existing.holdInvoice) {
         return existing;
       }
@@ -367,6 +416,7 @@ export class AtomicCoordinator {
           reservationStatus: 'RESERVED',
           tokenAddress,
           refundAddress,
+          evmSwapKey: `swap_${executionId}`,
           cltvExpiryBlocks: cltv,
           timelockSeconds,
           economicFingerprint: fingerprint,
@@ -391,24 +441,42 @@ export class AtomicCoordinator {
       } catch (err: any) {
         // Ambiguity check: did LND actually create the invoice?
         let observed: HoldInvoice | null = null;
+        let absenceProven = false;
         try {
           observed = await this.lightning.observeHoldInvoice(paymentHash);
-        } catch {
-          // LND observation failed
+        } catch (observationError: unknown) {
+          absenceProven = observationError instanceof LightningInvoiceNotFoundError;
         }
 
         if (observed && observed.paymentHash.toLowerCase() === paymentHash) {
           holdInvoice = observed;
-        } else {
-          // Definitive failure or confirmed no invoice created:
-          // Release the reserved liquidity exactly once
+        } else if (absenceProven) {
+          // Only typed authoritative absence permits release.
           const currentRec = recheck ?? this.persistence.getSovereignSwap(executionId);
           const resId = currentRec?.reservationId;
           if (resId && currentRec?.reservationStatus === 'RESERVED') {
             await this.inventory.release(resId);
-            this.updateRecord(executionId, { reservationStatus: 'RELEASED' });
           }
+          this.updateRecord(
+            executionId,
+            {
+              state: SovereignAtomicState.INVOICE_CANCELED,
+              reservationStatus: 'RELEASED',
+              recoveryRequired: false,
+              failureReason: undefined,
+            },
+            { reason: 'HOLD_INVOICE_AUTHORITATIVELY_NOT_CREATED' }
+          );
           throw err;
+        } else {
+          this.markRecoveryRequired(
+            executionId,
+            `Ambiguous hold-invoice creation: ${err?.message ?? String(err)}`,
+            'HOLD_INVOICE_CREATION_AMBIGUOUS'
+          );
+          throw new Error(
+            `AMBIGUOUS_HOLD_INVOICE_CREATION: Reservation retained for ${executionId}; authoritative Lightning reconciliation required`
+          );
         }
       }
 
@@ -554,17 +622,22 @@ export class AtomicCoordinator {
       // Cross-Rail CLTV Safety Window Gate
       await this.assertLightningCltvSafety(record, 'FUND');
 
-      this.updateRecord(
-        executionId,
-        { state: SovereignAtomicState.EVM_FUNDING_PENDING },
-        { reason: 'EVM_FUNDING_DISPATCH_STARTED' }
-      );
-
       // Calculate asymmetric timelock: EVM lock = now + timelockSeconds (12h)
       const blockTs = await this.evm.getBlockTimestamp();
       const timelockSeconds = record.timelockSeconds ?? 43200;
       const refundLocktime = blockTs + timelockSeconds;
       const swapKey = record.evmSwapKey ?? `swap_${executionId}`;
+
+      // Persist every deterministic HTLC input before the external dispatch.
+      this.updateRecord(
+        executionId,
+        {
+          state: SovereignAtomicState.EVM_FUNDING_PENDING,
+          evmSwapKey: swapKey,
+          refundLocktime,
+        },
+        { reason: 'EVM_FUNDING_DISPATCH_STARTED' }
+      );
 
       // Lock tokens on HTLCErc20 via EVM backend (calls Phase 5A BaseTransactionManager)
       let fundRes: { txHash: string; blockNumber: number; htlcId?: string | undefined };
@@ -1243,33 +1316,26 @@ export class AtomicCoordinator {
       }
       this.updateRecord(executionId, { retryCount: currentRetries + 1 });
 
-      // Query external states with fault-tolerance
-      let lnState: string | undefined;
-      try {
-        if (record.holdInvoice?.paymentHash) {
-          lnState = await this.lightning.getInvoiceState(record.holdInvoice.paymentHash);
-        }
-      } catch (err: any) {
-        // LND unavailable
-      }
+      const lightningObservation = await this.observeLightningForRecovery(record);
+      const evmObservation = await this.observeEvmForRecovery(record);
 
-      let evmState: any;
-      try {
-        if (record.evmSwapKey) {
-          evmState = await this.evm.observeHtlc(record.evmSwapKey);
-        }
-      } catch (err: any) {
-        // Base unavailable
-      }
-
-      // If both RPCs are down, fail-closed without guessing
-      if (!lnState && !evmState) {
-        return this.updateRecord(
+      if (lightningObservation.kind === 'UNKNOWN' || evmObservation.kind === 'UNKNOWN') {
+        const reasons = [
+          lightningObservation.kind === 'UNKNOWN' ? `Lightning: ${lightningObservation.reason}` : '',
+          evmObservation.kind === 'UNKNOWN' ? `EVM: ${evmObservation.reason}` : '',
+        ].filter(Boolean).join('; ');
+        return this.markRecoveryRequired(
           executionId,
-          { recoveryRequired: true, failureReason: 'LND and EVM RPCs both unavailable during reconciliation' },
-          { reason: 'RECONCILIATION_RPC_UNAVAILABLE' }
+          `Authoritative cross-rail observation unavailable: ${reasons}`,
+          'RECONCILIATION_EXTERNAL_STATE_UNKNOWN'
         );
       }
+
+      const observedInvoice = lightningObservation.kind === 'FOUND'
+        ? lightningObservation.invoice
+        : undefined;
+      const lnState = observedInvoice?.state;
+      const evmState = 'state' in evmObservation ? evmObservation.state : undefined;
 
       // CASE 1: Lightning is already SETTLED externally
       if (lnState === 'SETTLED') {
@@ -1277,7 +1343,9 @@ export class AtomicCoordinator {
           executionId,
           {
             state: SovereignAtomicState.COMPLETED,
-            holdInvoice: { ...record.holdInvoice!, state: 'SETTLED', settledAt: record.holdInvoice?.settledAt ?? new Date() },
+            holdInvoice: { ...observedInvoice!, state: 'SETTLED' },
+            recoveryRequired: false,
+            failureReason: undefined,
           },
           { reason: 'RECONCILED_FROM_AUTHORITATIVE_LND_SETTLED' }
         );
@@ -1333,38 +1401,53 @@ export class AtomicCoordinator {
           // Locked and waiting for claim or timelock
           return this.updateRecord(
             executionId,
-            { state: SovereignAtomicState.EVM_FUNDED },
+            {
+              state: SovereignAtomicState.EVM_FUNDED,
+              recoveryRequired: false,
+              failureReason: undefined,
+              holdInvoice: observedInvoice ?? record.holdInvoice,
+            },
             { reason: 'RECONCILED_EVM_LOCKED_WAITING' }
           );
         }
       }
 
-      // CASE 5: Base HTLC was NEVER funded on-chain
-      if ((!evmState || !evmState.funded) && record.holdInvoice) {
+      // CASE 5: A successful authoritative EVM read proves no HTLC exists.
+      if (evmObservation.kind === 'NOT_FUNDED_PROVEN') {
         if (lnState === 'ACCEPTED') {
-          // Payment is held. If state was LIGHTNING_HELD or EVM_FUNDING_PENDING, resume funding
-          if (
-            record.state === SovereignAtomicState.LIGHTNING_HELD ||
-            record.state === SovereignAtomicState.EVM_FUNDING_PENDING
-          ) {
+          // Only the pristine held state may begin funding. Pending/recovery
+          // states require durable intent recovery and are never blindly retried.
+          if (record.state === SovereignAtomicState.LIGHTNING_HELD) {
             try {
               return await this.fundEvmHtlc(executionId, workerId);
             } catch {
               return this.mustGetRecord(executionId);
             }
           }
-        } else if (lnState === 'CANCELED') {
+          return this.markRecoveryRequired(
+            executionId,
+            'Lightning remains ACCEPTED while Base funding is unresolved',
+            'CROSS_RAIL_OBLIGATION_REMAINS_HELD'
+          );
+        } else if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
           if (record.reservationId && record.reservationStatus === 'RESERVED') {
             await this.inventory.release(record.reservationId);
           }
+          const holdInvoice = observedInvoice
+            ? { ...observedInvoice, state: 'CANCELED' as const, canceledAt: observedInvoice.canceledAt ?? new Date() }
+            : undefined;
           return this.updateRecord(
             executionId,
             {
               state: SovereignAtomicState.INVOICE_CANCELED,
               reservationStatus: 'RELEASED',
-              holdInvoice: { ...record.holdInvoice, state: 'CANCELED', canceledAt: new Date() },
+              ...(holdInvoice ? { holdInvoice } : {}),
+              recoveryRequired: false,
+              failureReason: undefined,
             },
-            { reason: 'RECONCILED_FROM_LND_CANCELED' }
+            { reason: lightningObservation.kind === 'NOT_FOUND'
+                ? 'RECONCILED_FROM_AUTHORITATIVE_LND_ABSENCE_AND_EVM_ABSENCE'
+                : 'RECONCILED_FROM_LND_CANCELED_AND_EVM_ABSENCE' }
           );
         }
       }
@@ -1447,6 +1530,62 @@ export class AtomicCoordinator {
       this.records.set(record.id, record);
       this.idempotencyIndex.set(record.idempotencyKey, record.id);
       return record;
+    }
+  }
+
+  private markRecoveryRequired(
+    executionId: string,
+    failureReason: string,
+    transitionReason: string
+  ): SovereignExecutionRecord {
+    return this.syncCache(
+      this.persistence.markSovereignRecoveryRequired(
+        executionId,
+        failureReason,
+        transitionReason
+      )
+    );
+  }
+
+  private async observeLightningForRecovery(
+    record: SovereignExecutionRecord
+  ): Promise<LightningRecoveryObservation> {
+    const paymentHash = record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '');
+    try {
+      return {
+        kind: 'FOUND',
+        invoice: await this.lightning.observeHoldInvoice(paymentHash),
+      };
+    } catch (err: unknown) {
+      if (err instanceof LightningInvoiceNotFoundError) return { kind: 'NOT_FOUND' };
+      return {
+        kind: 'UNKNOWN',
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private async observeEvmForRecovery(
+    record: SovereignExecutionRecord
+  ): Promise<EvmRecoveryObservation> {
+    const swapKey = record.evmSwapKey ?? `swap_${record.id}`;
+    try {
+      const state = await this.evm.observeHtlc(swapKey);
+      if (!state || typeof state.funded !== 'boolean') {
+        return { kind: 'UNKNOWN', reason: 'Malformed EVM HTLC observation' };
+      }
+      if (state.refunded === true) return { kind: 'REFUNDED', state };
+      if (state.completed === true) return { kind: 'CLAIMED', state };
+      if (state.funded === true) return { kind: 'FUNDED', state };
+      if (state.funded === false && state.completed === false && state.refunded === false) {
+        return { kind: 'NOT_FUNDED_PROVEN', state };
+      }
+      return { kind: 'PENDING', state };
+    } catch (err: unknown) {
+      return {
+        kind: 'UNKNOWN',
+        reason: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 

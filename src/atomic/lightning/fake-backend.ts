@@ -15,6 +15,7 @@ import type {
   PaymentHash,
   SecretPreimage,
 } from '../types.ts';
+import { LightningInvoiceNotFoundError } from '../types.ts';
 
 export class FakeLightningAtomicBackend implements ILightningAtomicBackend {
   readonly backendName = 'FakeLightningAtomicBackend';
@@ -68,7 +69,7 @@ export class FakeLightningAtomicBackend implements ILightningAtomicBackend {
   async observeHoldInvoice(paymentHash: PaymentHash): Promise<HoldInvoice> {
     const invoice = this.invoices.get(paymentHash.toLowerCase());
     if (!invoice) {
-      throw new Error(`Invoice not found for payment hash: ${paymentHash}`);
+      throw new LightningInvoiceNotFoundError(paymentHash);
     }
     return invoice;
   }

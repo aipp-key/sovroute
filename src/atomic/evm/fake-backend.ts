@@ -179,32 +179,10 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityPr
   }
 
   async observeHtlc(swapKey: string): Promise<EvmHtlcState> {
-    let htlc = this.htlcs.get(swapKey);
-    if (!htlc && this.persistence) {
-      const swap = this.persistence.getSovereignSwapBySwapKey(swapKey);
-      if (swap && swap.evmSwapKey) {
-        const funded =
-          swap.state !== 'PLAN_PREPARED' &&
-          swap.state !== 'INVOICE_CREATED' &&
-          swap.state !== 'LIGHTNING_HELD';
-        const completed =
-          swap.state === 'COMPLETED' || swap.state === 'EVM_CLAIM_CONFIRMED';
-        const refunded = swap.state === 'REFUNDED';
-        const htlcId = swap.evmHtlcId ?? this.swapKeyToHtlcId.get(swapKey);
-        return {
-          swapKey,
-          htlcId,
-          funded,
-          completed,
-          refunded,
-          balance: funded && !completed && !refunded ? swap.expectedUsdcAmount : 0n,
-          timelock: swap.refundLocktime ?? 0,
-          blockTimestamp: this.currentBlockTimestamp,
-        };
-      }
-    }
+    const htlc = this.htlcs.get(swapKey);
     if (!htlc) {
-      const fallbackHtlcId = this.swapKeyToHtlcId.get(swapKey);
+      const persistedBinding = this.persistence?.getSovereignSwapBySwapKey?.(swapKey)?.evmHtlcId;
+      const fallbackHtlcId = this.swapKeyToHtlcId.get(swapKey) ?? persistedBinding;
       return {
         swapKey,
         htlcId: fallbackHtlcId,

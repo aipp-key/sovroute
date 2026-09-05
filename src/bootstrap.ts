@@ -18,30 +18,40 @@ import { createPublicClient, http } from 'viem';
 import { baseSepolia } from 'viem/chains';
 import {
   ProductionConfigValidator,
+  ProductionConfigError,
   type RouterProductionConfig,
 } from './config/production-config.ts';
+
+export { ProductionConfigError };
 import { SqlitePersistence } from './persistence/sqlite.ts';
 import { HealthService } from './health/health-service.ts';
 import { AtomicCoordinator } from './atomic/coordinator/coordinator.ts';
-import { LndClient, type LndClientConfig } from './atomic/lightning/lnd-client.ts';
+import { LndClient, type ILndClient, type LndClientConfig } from './atomic/lightning/lnd-client.ts';
 import { LndLightningAtomicBackend } from './atomic/lightning/lnd-backend.ts';
 import { BaseSepoliaAtomicBackend } from './atomic/evm/base-sepolia-backend.ts';
+import { ChainInventoryReconciler } from './atomic/liquidity/chain-reconciler.ts';
 import type {
   ILightningAtomicBackend,
   IEvmAtomicBackend,
   IReconciledLiquidityInventory,
+  IChainCapacityProvider,
 } from './atomic/types.ts';
 import { SqliteLiquidityInventory } from './atomic/liquidity/sqlite-inventory.ts';
 import { BASE_SEPOLIA_CHAIN_ID } from './atomic/evm/base-guard.ts';
 
 export interface ProductionBootstrapOptions {
-  /**
-   * Explicit liquidity inventory instance provided by deployment layer.
-   * REQUIRED: The production router never fabricates artificial liquidity balances.
-   * Must implement IReconciledLiquidityInventory for fail-closed on-chain boot reconciliation (FF-1).
-   */
-  readonly inventory: IReconciledLiquidityInventory;
   readonly workerId?: string | undefined;
+
+  /**
+   * TEST-ONLY dependency injection seam.
+   * Strictly prohibited when config.environment === 'production'.
+   */
+  readonly _testOverrides?: {
+    readonly inventory?: IReconciledLiquidityInventory;
+    readonly capacityProvider?: IChainCapacityProvider;
+    readonly evmBackend?: (IEvmAtomicBackend & IChainCapacityProvider) | undefined;
+    readonly lightningBackend?: ILightningAtomicBackend;
+  } | undefined;
 }
 
 export interface ProductionBootstrapResult {
@@ -49,9 +59,15 @@ export interface ProductionBootstrapResult {
   readonly persistence: SqlitePersistence;
   readonly lightningBackend: ILightningAtomicBackend;
   readonly evmBackend: IEvmAtomicBackend;
+  readonly reconciler: ChainInventoryReconciler;
   readonly inventory: IReconciledLiquidityInventory;
   readonly coordinator: AtomicCoordinator;
   readonly healthService: HealthService;
+}
+
+export interface ProductionBootstrapTestTransports {
+  readonly basePublicClient: any;
+  readonly lndClient: ILndClient;
 }
 
 export class MissingInventoryError extends Error {
@@ -66,46 +82,109 @@ export class MissingInventoryError extends Error {
  *
  * GUARANTEE: NO economic backend, persistence instance, or coordinator
  * can be activated without first passing ProductionConfigValidator.validate().
+ *
+ * Authoritative construction chain (FB-1):
+ * Persistence
+ * → Base backend
+ * → ChainInventoryReconciler
+ * → SqliteLiquidityInventory
+ * → startup reconciliation
+ * → coordinator
  */
 export async function bootstrapProductionRouter(
   rawConfig: RouterProductionConfig,
-  options: ProductionBootstrapOptions
+  options?: ProductionBootstrapOptions
+): Promise<ProductionBootstrapResult> {
+  return bootstrapProductionRouterInternal(rawConfig, options);
+}
+
+/**
+ * Test-only transport seam. It still constructs the real persistence, Base
+ * backend, LND backend, reconciler, inventory, and coordinator objects.
+ */
+export async function bootstrapProductionRouterForTesting(
+  rawConfig: RouterProductionConfig,
+  transports: ProductionBootstrapTestTransports
+): Promise<ProductionBootstrapResult> {
+  return bootstrapProductionRouterInternal(rawConfig, undefined, transports);
+}
+
+async function bootstrapProductionRouterInternal(
+  rawConfig: RouterProductionConfig,
+  options?: ProductionBootstrapOptions,
+  testTransports?: ProductionBootstrapTestTransports
 ): Promise<ProductionBootstrapResult> {
   // =========================================================================
   // STEP 1: VALIDATE PRODUCTION CONFIG FIRST (BEFORE ANY RESOURCE ALLOCATION)
   // =========================================================================
   const validatedConfig = ProductionConfigValidator.validate(rawConfig);
 
-  // =========================================================================
-  // STEP 2: REQUIRE EXPLICIT RECONCILED INVENTORY (FAIL-CLOSED: NO SILENT FAKE DEFAULT)
-  // =========================================================================
-  if (!options || !options.inventory) {
-    throw new MissingInventoryError(
-      'Production bootstrap requires an explicit IReconciledLiquidityInventory instance. ' +
-      'Silent fabrication of liquidity balances is strictly prohibited in production profile.'
+  // Reject caller-supplied inventory on production options (FB-1, FB-1 test 8)
+  if ((options as any)?.inventory !== undefined) {
+    throw new ProductionConfigError(
+      'External inventory injection is strictly prohibited. Production bootstrap constructs and owns authoritative inventory.'
     );
   }
-  if (typeof options.inventory.reconcileOnBoot !== 'function') {
-    throw new MissingInventoryError(
-      'Production bootstrap requires an IReconciledLiquidityInventory instance with a reconcileOnBoot method.'
+
+  // Reject test overrides in production environment
+  if (validatedConfig.environment === 'production' && options?._testOverrides) {
+    throw new ProductionConfigError(
+      'Production bootstrap strictly forbids _testOverrides in production profile.'
     );
   }
 
   // =========================================================================
-  // STEP 3: INITIALIZE DURABLE PERSISTENCE WITH FAIL-CLOSED INTEGRITY CHECK
+  // STEP 2: INITIALIZE DURABLE PERSISTENCE WITH FAIL-CLOSED INTEGRITY CHECK
   // =========================================================================
   const persistence = new SqlitePersistence({ filename: validatedConfig.databasePath });
-  const check = (persistence as any).db.prepare('PRAGMA integrity_check;').all();
-  if (!check || check.length === 0 || check[0].integrity_check !== 'ok') {
+  if (!persistence.checkIntegrity()) {
     persistence.close();
-    throw new Error(`DATABASE_INTEGRITY_FAILURE: Active database failed integrity_check: ${JSON.stringify(check)}`);
+    throw new Error('DATABASE_INTEGRITY_FAILURE: Active database failed integrity_check');
   }
 
   // =========================================================================
-  // STEP 3.5: BASE ONCHAIN INVENTORY RECONCILIATION ON BOOT (REC-4, REC-5, FF-1)
+  // STEP 3: CONSTRUCT PRODUCTION BASE SEPOLIA EVM ATOMIC BACKEND
   // =========================================================================
-  if (options.inventory instanceof SqliteLiquidityInventory) {
-    if (options.inventory.getPersistence() !== persistence) {
+  const backendConfig = {
+    rpcUrl: validatedConfig.evm.rpcUrl,
+    operatorPrivateKey: validatedConfig.evm.operationalPrivateKey as `0x${string}`,
+    persistence,
+    chainId: validatedConfig.evm.chainId,
+    htlcAddress: validatedConfig.evm.htlcAddress as `0x${string}`,
+    tokenAddress: validatedConfig.evm.usdcAddress as `0x${string}`,
+    requiredConfirmations: validatedConfig.evm.finalityPolicy.requiredConfirmations,
+    finalityPolicy: validatedConfig.evm.finalityPolicy,
+    transactionPolicy: {
+      requiredConfirmations: validatedConfig.evm.finalityPolicy.requiredConfirmations,
+    },
+  };
+  const overriddenBackend = options?._testOverrides?.evmBackend ?? options?._testOverrides?.capacityProvider;
+  const evmBackend: IEvmAtomicBackend & IChainCapacityProvider = overriddenBackend
+    ? (overriddenBackend as IEvmAtomicBackend & IChainCapacityProvider)
+    : testTransports
+      ? BaseSepoliaAtomicBackend.createForTesting(backendConfig, testTransports.basePublicClient)
+      : new BaseSepoliaAtomicBackend(backendConfig);
+
+  // =========================================================================
+  // STEP 4: CONSTRUCT CHAIN INVENTORY RECONCILER WITH SAME PERSISTENCE & BACKEND
+  // =========================================================================
+  const reconciler = new ChainInventoryReconciler({
+    persistence,
+    capacityProvider: evmBackend,
+    defaultTokenAddress: validatedConfig.evm.usdcAddress,
+    expectedChainId: validatedConfig.evm.chainId,
+    policy: validatedConfig.evm.reconciliationPolicy,
+  });
+
+  // =========================================================================
+  // STEP 5: CONSTRUCT AUTHORITATIVE SQLITE LIQUIDITY INVENTORY
+  // =========================================================================
+  const inventory: IReconciledLiquidityInventory =
+    options?._testOverrides?.inventory ??
+    new SqliteLiquidityInventory(persistence, { reconciler });
+
+  if (inventory instanceof SqliteLiquidityInventory) {
+    if (inventory.getPersistence() !== persistence) {
       persistence.close();
       throw new Error(
         'INVENTORY_PERSISTENCE_MISMATCH: Provided inventory persistence instance does not match bootstrap persistence.'
@@ -113,7 +192,17 @@ export async function bootstrapProductionRouter(
     }
   }
 
-  const bootResult = await options.inventory.reconcileOnBoot();
+  if (typeof (inventory as any).reconcileOnBoot !== 'function') {
+    persistence.close();
+    throw new MissingInventoryError(
+      'Production bootstrap requires an IReconciledLiquidityInventory instance with a reconcileOnBoot method.'
+    );
+  }
+
+  // =========================================================================
+  // STEP 6: BASE ONCHAIN INVENTORY RECONCILIATION ON BOOT (REC-4, REC-5, FF-1)
+  // =========================================================================
+  const bootResult = await inventory.reconcileOnBoot();
   if (bootResult.readinessState !== 'READY') {
     persistence.close();
     throw new Error(
@@ -122,44 +211,48 @@ export async function bootstrapProductionRouter(
   }
 
   // =========================================================================
-  // STEP 4: INITIALIZE CANONICAL REAL LND LIGHTNING ATOMIC BACKEND
+  // STEP 7: INITIALIZE CANONICAL REAL LND LIGHTNING ATOMIC BACKEND
   // =========================================================================
-  const lndConfig: LndClientConfig = {
-    restEndpoint: `https://${validatedConfig.lightning.host}:${validatedConfig.lightning.port}`,
-    expectedNetwork: 'regtest',
-  };
-  if (validatedConfig.lightning.macaroonHex) {
-    lndConfig.macaroonHex = validatedConfig.lightning.macaroonHex;
+  let lightningBackend: ILightningAtomicBackend;
+  let lndClient: ILndClient | undefined;
+
+  if (testTransports) {
+    lndClient = testTransports.lndClient;
+    lightningBackend = new LndLightningAtomicBackend(lndClient);
+  } else if (options?._testOverrides?.lightningBackend) {
+    lightningBackend = options._testOverrides.lightningBackend;
+  } else {
+    const lndConfig: LndClientConfig = {
+      restEndpoint: `https://${validatedConfig.lightning.host}:${validatedConfig.lightning.port}`,
+      expectedNetwork: 'regtest',
+    };
+    if (validatedConfig.lightning.macaroonHex) {
+      lndConfig.macaroonHex = validatedConfig.lightning.macaroonHex;
+    }
+    if (validatedConfig.lightning.tlsCertHex) {
+      lndConfig.tlsCertPem = Buffer.from(validatedConfig.lightning.tlsCertHex, 'hex').toString('utf8');
+    }
+
+    const verifiedLndClient = new LndClient(lndConfig);
+    await verifiedLndClient.verifyNetworkSafety();
+    lndClient = verifiedLndClient;
+    lightningBackend = new LndLightningAtomicBackend(verifiedLndClient);
   }
-  if (validatedConfig.lightning.tlsCertHex) {
-    lndConfig.tlsCertPem = Buffer.from(validatedConfig.lightning.tlsCertHex, 'hex').toString('utf8');
-  }
-
-  const lndClient = new LndClient(lndConfig);
-  await lndClient.verifyNetworkSafety();
-  const lightningBackend = new LndLightningAtomicBackend(lndClient);
 
   // =========================================================================
-  // STEP 5: INITIALIZE CANONICAL REAL BASE SEPOLIA EVM ATOMIC BACKEND
+  // STEP 8: CONSTRUCT REAL READ-ONLY BASE RPC & LND HEALTH PROBES
   // =========================================================================
-  const evmBackend = new BaseSepoliaAtomicBackend({
-    rpcUrl: validatedConfig.evm.rpcUrl,
-    operatorPrivateKey: validatedConfig.evm.operationalPrivateKey as `0x${string}`,
-    persistence,
-    requiredConfirmations: validatedConfig.evm.finalityPolicy.requiredConfirmations,
-  });
-
-  // =========================================================================
-  // STEP 6: CONSTRUCT REAL READ-ONLY BASE RPC & LND HEALTH PROBES
-  // =========================================================================
-  const publicEvmClient = createPublicClient({
-    chain: baseSepolia,
-    transport: http(validatedConfig.evm.rpcUrl, { timeout: 5000 }),
-  });
+  const publicEvmClient = testTransports?.basePublicClient ?? createPublicClient({
+      chain: baseSepolia,
+      transport: http(validatedConfig.evm.rpcUrl, { timeout: 5000 }),
+    });
 
   const healthService = new HealthService(persistence, {
     checkLightning: async () => {
       try {
+        if (!lndClient) {
+          return { available: true, details: { testOverride: true } };
+        }
         const info = await lndClient.getInfo();
         return {
           available: true,
@@ -171,7 +264,6 @@ export async function bootstrapProductionRouter(
     },
     checkEvm: async () => {
       try {
-        // Read-only probe: verify RPC liveness, chain identity, and latest block
         const chainId = await publicEvmClient.getChainId();
         if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
           return {
@@ -196,11 +288,12 @@ export async function bootstrapProductionRouter(
   });
 
   // =========================================================================
-  // STEP 7: WIRE ATOMIC COORDINATOR WITH VALIDATED POLICIES
+  // STEP 9: WIRE ATOMIC COORDINATOR WITH VALIDATED POLICIES
   // =========================================================================
-  const coordinator = new AtomicCoordinator(lightningBackend, evmBackend, options.inventory, {
+  const coordinator = new AtomicCoordinator(lightningBackend, evmBackend, inventory, {
     persistence,
-    workerId: options.workerId ?? 'worker-production-primary',
+    workerId: options?.workerId ?? 'worker-production-primary',
+    tokenAddress: validatedConfig.evm.usdcAddress,
     finalityPolicy: validatedConfig.evm.finalityPolicy,
     leaseMs: validatedConfig.safety.leaseMs,
     maxRetries: validatedConfig.safety.maxReconciliationRetries,
@@ -211,7 +304,8 @@ export async function bootstrapProductionRouter(
     persistence,
     lightningBackend,
     evmBackend,
-    inventory: options.inventory,
+    reconciler,
+    inventory,
     coordinator,
     healthService,
   };

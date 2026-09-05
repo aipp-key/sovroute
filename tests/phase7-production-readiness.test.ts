@@ -30,7 +30,6 @@ import {
 } from '../src/config/production-config.ts';
 import {
   bootstrapProductionRouter,
-  MissingInventoryError,
 } from '../src/bootstrap.ts';
 import {
   BASE_SEPOLIA_CHAIN_ID,
@@ -52,7 +51,11 @@ import {
 import { FakeLightningAtomicBackend } from '../src/atomic/lightning/fake-backend.ts';
 import { FakeEvmAtomicBackend } from '../src/atomic/evm/fake-backend.ts';
 import { FakeLiquidityInventory } from '../src/atomic/liquidity/fake-inventory.ts';
-import { SovereignAtomicState, type HashLock } from '../src/atomic/types.ts';
+import {
+  SovereignAtomicState,
+  type HashLock,
+  BASE_SEPOLIA_TEST_POLICY,
+} from '../src/atomic/types.ts';
 
 const TEST_DIR = path.resolve('./tmp_phase7_test');
 
@@ -87,6 +90,7 @@ function getValidConfig(): RouterProductionConfig {
         policyTag: 'BASE_SEPOLIA_STRICT',
         requiredConfirmations: 2,
       },
+      reconciliationPolicy: BASE_SEPOLIA_TEST_POLICY,
       operationalPrivateKey: '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     },
     safety: {
@@ -1548,6 +1552,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
             policyTag: 'BASE_SEPOLIA_TEST_POLICY',
             requiredConfirmations: 2,
           },
+          reconciliationPolicy: BASE_SEPOLIA_TEST_POLICY,
           operationalPrivateKey: '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         },
         safety: {
@@ -1562,11 +1567,12 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
 
     it('BOOT-01: Real production bootstrap + valid Base Sepolia config succeeds', async () => {
       const config = getValidBootstrapConfig();
+      config.environment = 'test';
       const inventory = new FakeLiquidityInventory({
         '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40': 1_000_000_000n,
         '0x036cbd53842c5426634e7929541ec2318f3dcf7e': 1_000_000_000n,
       });
-      const router = await bootstrapProductionRouter(config, { inventory });
+      const router = await bootstrapProductionRouter(config, { _testOverrides: { inventory } });
 
       assert.ok(router.coordinator);
       assert.ok(router.persistence);
@@ -1582,7 +1588,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       (config.evm as any).chainId = BASE_MAINNET_CHAIN_ID;
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         CriticalMainnetForbiddenError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1593,7 +1599,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       (config.lightning as any).network = 'mainnet';
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         CriticalMainnetForbiddenError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1604,7 +1610,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       config.evm.usdcAddress = OFFICIAL_BASE_MAINNET_USDC_ADDRESS;
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         CriticalMainnetForbiddenError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1615,7 +1621,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       config.safety.unsafeDirectExecutionForTests = true;
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1626,7 +1632,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       (config.evm as any).finalityPolicy = undefined;
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1637,7 +1643,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       config.evm.finalityPolicy.requiredConfirmations = 1;
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1648,7 +1654,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       config.databasePath = ':memory:';
 
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         ProductionConfigError
       );
     });
@@ -1656,8 +1662,8 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
     it('BOOT-09: Real production bootstrap requires explicit inventory and forbids bypasses', async () => {
       const config = getValidBootstrapConfig();
       await assert.rejects(
-        () => bootstrapProductionRouter(config, {} as any),
-        MissingInventoryError
+        () => bootstrapProductionRouter(config, { inventory: {} } as any),
+        ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
     });
@@ -1667,7 +1673,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       badConfig.safety.allowMainnet = true;
 
       await assert.rejects(
-        () => bootstrapProductionRouter(badConfig, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(badConfig),
         CriticalMainnetForbiddenError
       );
       assert.strictEqual(fs.existsSync(badConfig.databasePath), false);
@@ -1678,16 +1684,18 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
     // =======================================================================
     it('SAFEBOOT-01: Bootstrap always constructs canonical LndLightningAtomicBackend', async () => {
       const config = getValidBootstrapConfig();
+      config.environment = 'test';
       const inventory = new FakeLiquidityInventory({});
-      const router = await bootstrapProductionRouter(config, { inventory });
+      const router = await bootstrapProductionRouter(config, { _testOverrides: { inventory } });
       assert.strictEqual(router.lightningBackend.constructor.name, 'LndLightningAtomicBackend');
       router.persistence.close();
     });
 
     it('SAFEBOOT-02: Bootstrap always constructs canonical BaseSepoliaAtomicBackend', async () => {
       const config = getValidBootstrapConfig();
+      config.environment = 'test';
       const inventory = new FakeLiquidityInventory({});
-      const router = await bootstrapProductionRouter(config, { inventory });
+      const router = await bootstrapProductionRouter(config, { _testOverrides: { inventory } });
       assert.strictEqual(router.evmBackend.constructor.name, 'BaseSepoliaAtomicBackend');
       router.persistence.close();
     });
@@ -1696,7 +1704,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       const config = getValidBootstrapConfig();
       config.evm.chainId = 42161; // Arbitrum (unsupported non-mainnet network)
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1706,7 +1714,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       const config = getValidBootstrapConfig();
       config.safety.minRemainingBtcBlocks = 50; // Below 140 threshold
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
@@ -1716,7 +1724,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       const config = getValidBootstrapConfig();
       (config.evm as any).chainId = BASE_MAINNET_CHAIN_ID;
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         CriticalMainnetForbiddenError
       );
     });
@@ -1725,15 +1733,16 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
       const config = getValidBootstrapConfig();
       (config.lightning as any).network = 'mainnet';
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: new FakeLiquidityInventory({}) }),
+        () => bootstrapProductionRouter(config),
         CriticalMainnetForbiddenError
       );
     });
 
     it('SAFEBOOT-07: Bootstrap returns complete ProductionBootstrapResult bundle', async () => {
       const config = getValidBootstrapConfig();
+      config.environment = 'test';
       const inventory = new FakeLiquidityInventory({});
-      const router = await bootstrapProductionRouter(config, { inventory, workerId: 'worker-sb-07' });
+      const router = await bootstrapProductionRouter(config, { _testOverrides: { inventory }, workerId: 'worker-sb-07' });
       assert.ok(router.config);
       assert.ok(router.persistence);
       assert.ok(router.lightningBackend);
@@ -1747,24 +1756,20 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
     // =======================================================================
     // INVBOOT-01..04: Inventory Dependency Injection & Balance Checks
     // =======================================================================
-    it('INVBOOT-01: Missing options.inventory throws MissingInventoryError fail-closed', async () => {
+    it('INVBOOT-01: External options.inventory throws ProductionConfigError fail-closed', async () => {
       const config = getValidBootstrapConfig();
       await assert.rejects(
-        () => bootstrapProductionRouter(config, {} as any),
-        MissingInventoryError
+        () => bootstrapProductionRouter(config, { inventory: {} } as any),
+        ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
     });
 
-    it('INVBOOT-02: Undefined or null inventory throws MissingInventoryError', async () => {
+    it('INVBOOT-02: External inventory injection is strictly rejected', async () => {
       const config = getValidBootstrapConfig();
       await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: undefined as any }),
-        MissingInventoryError
-      );
-      await assert.rejects(
-        () => bootstrapProductionRouter(config, { inventory: null as any }),
-        MissingInventoryError
+        () => bootstrapProductionRouter(config, { inventory: 'fake' } as any),
+        ProductionConfigError
       );
       assert.strictEqual(fs.existsSync(config.databasePath), false);
     });
@@ -1776,9 +1781,10 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
 
     it('INVBOOT-04: Provided ILiquidityInventory is correctly wired to coordinator and satisfies balance checks', async () => {
       const config = getValidBootstrapConfig();
+      config.environment = 'test';
       const token = '0x036cbd53842c5426634e7929541ec2318f3dcf7e';
       const inventory = new FakeLiquidityInventory({ [token]: 5_000_000n });
-      const router = await bootstrapProductionRouter(config, { inventory });
+      const router = await bootstrapProductionRouter(config, { _testOverrides: { inventory } });
       const avail = await router.inventory.getAvailableBalance(token);
       assert.strictEqual(avail, 5_000_000n);
       router.persistence.close();
@@ -1797,8 +1803,9 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
 
     it('PORT-02: Bootstrap executes without local regtest binary dependency or Windows executable checks', async () => {
       const config = getValidBootstrapConfig();
+      config.environment = 'test';
       const inventory = new FakeLiquidityInventory({});
-      const router = await bootstrapProductionRouter(config, { inventory });
+      const router = await bootstrapProductionRouter(config, { _testOverrides: { inventory } });
       assert.ok(router);
       router.persistence.close();
     });

@@ -17,6 +17,9 @@ const unitTestFiles = [
   'tests/inventory-fail-closed-hardening.test.ts',
   'tests/inventory-stale-snapshot-cross-process.test.ts',
   'tests/production-bootstrap-safety.test.ts',
+  'tests/inventory-final-four-blockers.test.ts',
+  'tests/cross-rail-reservation-retention-cross-process.test.ts',
+  'tests/final-blocker-remediation.test.ts',
 ];
 
 const res = spawnSync(

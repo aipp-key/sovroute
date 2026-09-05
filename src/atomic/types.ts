@@ -53,6 +53,20 @@ export class AuthorizedSettlementPreimage {
 
 export type HoldInvoiceState = 'OPEN' | 'ACCEPTED' | 'SETTLED' | 'CANCELED';
 
+/**
+ * Raised only when an authoritative Lightning lookup proves that an invoice
+ * does not exist. Transport, authentication, and protocol failures must never
+ * be converted to this error.
+ */
+export class LightningInvoiceNotFoundError extends Error {
+  public readonly code = 'LIGHTNING_INVOICE_NOT_FOUND';
+
+  constructor(paymentHash: PaymentHash) {
+    super(`LIGHTNING_INVOICE_NOT_FOUND: Invoice not found for payment hash ${paymentHash}`);
+    this.name = 'LightningInvoiceNotFoundError';
+  }
+}
+
 export interface HoldInvoice {
   paymentHash: PaymentHash;
   bolt11: string;
@@ -157,6 +171,7 @@ export const LiquidityReservationStatus = {
   RESERVED: 'RESERVED',
   COMMITTED: 'COMMITTED',
   RELEASED: 'RELEASED',
+  SETTLED: 'SETTLED',
 } as const;
 
 export type LiquidityReservationStatus =

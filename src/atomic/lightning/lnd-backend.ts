@@ -21,7 +21,8 @@ import type {
   PaymentHash,
   SecretPreimage,
 } from '../types.ts';
-import type { ILndClient } from './lnd-client.ts';
+import { LightningInvoiceNotFoundError } from '../types.ts';
+import { LndRestError, type ILndClient } from './lnd-client.ts';
 import type { LndInvoice, LndInvoiceState } from './lnd-types.ts';
 
 export class LndLightningAtomicBackend implements ILightningAtomicBackend {
@@ -73,8 +74,15 @@ export class LndLightningAtomicBackend implements ILightningAtomicBackend {
 
   public async observeHoldInvoice(paymentHash: PaymentHash): Promise<HoldInvoice> {
     const cleanHash = paymentHash.replace(/^0x/, '').toLowerCase();
-    const invoice = await this.client.lookupInvoice(cleanHash);
-    return this.mapLndInvoiceToHoldInvoice(cleanHash, invoice);
+    try {
+      const invoice = await this.client.lookupInvoice(cleanHash);
+      return this.mapLndInvoiceToHoldInvoice(cleanHash, invoice);
+    } catch (err: unknown) {
+      if (err instanceof LndRestError && err.statusCode === 404) {
+        throw new LightningInvoiceNotFoundError(cleanHash);
+      }
+      throw err;
+    }
   }
 
   public async settleHoldInvoice(
@@ -218,8 +226,11 @@ export class LndLightningAtomicBackend implements ILightningAtomicBackend {
         }
         return this.mapLndInvoiceToHoldInvoice(paymentHash, existing);
       }
-    } catch {
-      // Invoice was not created on LND
+    } catch (err: unknown) {
+      if (!(err instanceof LndRestError) || err.statusCode !== 404) {
+        throw err;
+      }
+      // An authoritative 404 proves that the invoice was not created.
     }
     return null;
   }
