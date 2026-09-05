@@ -338,6 +338,17 @@ export const SovereignAtomicState = {
 
 export type SovereignAtomicState = (typeof SovereignAtomicState)[keyof typeof SovereignAtomicState];
 
+export const TERMINAL_SOVEREIGN_ATOMIC_STATES: ReadonlySet<SovereignAtomicState> = new Set([
+  SovereignAtomicState.COMPLETED,
+  SovereignAtomicState.REFUNDED,
+  SovereignAtomicState.INVOICE_CANCELED,
+  SovereignAtomicState.EXPIRED,
+]);
+
+export function isNonTerminalSovereignAtomicState(state: SovereignAtomicState): boolean {
+  return !TERMINAL_SOVEREIGN_ATOMIC_STATES.has(state);
+}
+
 export interface SovereignExecutionRecord {
   id: string;
   idempotencyKey: string;

@@ -367,6 +367,23 @@ export class AtomicCoordinator {
         return recheck;
       }
 
+      if (recheck && !recheck.holdInvoice) {
+        try {
+          const existingInv = await this.lightning.observeHoldInvoice(paymentHash);
+          if (existingInv && existingInv.paymentHash.toLowerCase() === paymentHash) {
+            const converged = this.updateRecord(recheck.id, {
+              holdInvoice: existingInv,
+              state: existingInv.state === 'OPEN' ? SovereignAtomicState.INVOICE_CREATED : recheck.state,
+            });
+            return converged;
+          }
+        } catch (obsErr: unknown) {
+          if (!(obsErr instanceof LightningInvoiceNotFoundError)) {
+            throw obsErr;
+          }
+        }
+      }
+
       const executionId = recheck ? recheck.id : randomUUID();
       const cltv = params.cltvExpiryBlocks ?? 144; // ~24h in Bitcoin blocks
       const timelockSeconds = params.timelockSeconds ?? 43200; // 12h
@@ -1286,7 +1303,7 @@ export class AtomicCoordinator {
     executionId: string,
     workerId: string = this.defaultWorkerId
   ): Promise<SovereignExecutionRecord> {
-    const record = this.mustGetRecord(executionId);
+    let record = this.mustGetRecord(executionId);
 
     // Terminal states require no action
     if (
@@ -1341,6 +1358,13 @@ export class AtomicCoordinator {
       const isBaseRefunded = evmObservation.kind === 'REFUNDED' || evmState?.refunded === true;
       const isBaseFunded = evmObservation.kind === 'FUNDED' || (evmState?.funded && !evmState?.completed && !evmState?.refunded);
       const isBaseAbsent = evmObservation.kind === 'NOT_FUNDED_PROVEN';
+
+      // Bind discovered holdInvoice to record if missing
+      if (!record.holdInvoice && observedInvoice) {
+        record = this.updateRecord(executionId, { holdInvoice: observedInvoice });
+      }
+
+
 
       // =========================================================================
       // CASE 1: Lightning is already SETTLED externally
@@ -1429,6 +1453,20 @@ export class AtomicCoordinator {
             } catch {
               // Settlement in progress or manual review needed
             }
+          } else {
+            if (record.reservationId && (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined)) {
+              await this.inventory.commit(record.reservationId);
+            }
+            return this.updateRecord(
+              executionId,
+              {
+                state: SovereignAtomicState.EVM_CLAIM_DETECTED,
+                reservationStatus: 'COMMITTED',
+                recoveryRequired: true,
+                failureReason: 'Base HTLC is CLAIMED onchain but claim transaction hash / preimage is pending extraction to settle Lightning',
+              },
+              { reason: 'RECONCILED_FROM_EVM_CLAIMED_WITHOUT_TX_HASH' }
+            );
           }
         }
 
@@ -1559,10 +1597,14 @@ export class AtomicCoordinator {
           }
         } else {
           // Locked and waiting for claim or timelock
+          if (record.reservationId && (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined)) {
+            await this.inventory.commit(record.reservationId);
+          }
           return this.updateRecord(
             executionId,
             {
               state: SovereignAtomicState.EVM_FUNDED,
+              reservationStatus: 'COMMITTED',
               recoveryRequired: false,
               failureReason: undefined,
               holdInvoice: observedInvoice ?? record.holdInvoice,
@@ -1574,6 +1616,56 @@ export class AtomicCoordinator {
 
       // CASE 5: A successful authoritative EVM read proves no HTLC exists.
       if (evmObservation.kind === 'NOT_FUNDED_PROVEN') {
+        if (record.state === SovereignAtomicState.EVM_FUNDING_PENDING) {
+          const intent = record.evmSwapKey ? this.persistence.getEvmIntentBySwapKey(record.evmSwapKey, 'FUND') : null;
+          if (!intent) {
+            return this.markRecoveryRequired(
+              executionId,
+              `EVM_FUNDING_PENDING swap ${executionId} has no durable FUND intent; cannot safely confirm or retry funding; reservation retained`,
+              'MISSING_DURABLE_FUND_INTENT'
+            );
+          }
+          if (['FAILED', 'REVERTED', 'NONCE_CONFLICT', 'PENDING', 'CREATED', 'NONCE_RESERVED', 'DISPATCHING'].includes(intent.status)) {
+            return this.markRecoveryRequired(
+              executionId,
+              `Base FUND intent ${intent.id} is in status ${intent.status}; recovery pass retains reservation with zero blind retry`,
+              `BASE_FUNDING_${intent.status}_CROSS_RAIL_RESERVED`
+            );
+          }
+        }
+
+        if (record.state === SovereignAtomicState.PLAN_PREPARED) {
+          if (lnState === 'OPEN') {
+            return this.updateRecord(
+              executionId,
+              {
+                state: SovereignAtomicState.INVOICE_CREATED,
+                holdInvoice: observedInvoice,
+                recoveryRequired: false,
+                failureReason: undefined,
+              },
+              { reason: 'RECONCILED_FROM_PLAN_PREPARED_TO_INVOICE_CREATED' }
+            );
+          }
+          if (lnState === 'ACCEPTED') {
+            record = this.updateRecord(
+              executionId,
+              {
+                state: SovereignAtomicState.LIGHTNING_HELD,
+                holdInvoice: observedInvoice,
+                recoveryRequired: false,
+                failureReason: undefined,
+              },
+              { reason: 'RECONCILED_FROM_PLAN_PREPARED_TO_LIGHTNING_HELD' }
+            );
+            try {
+              return await this.fundEvmHtlc(executionId, workerId);
+            } catch {
+              return this.mustGetRecord(executionId);
+            }
+          }
+        }
+
         if (lnState === 'ACCEPTED') {
           // Only the pristine held state may begin funding. Pending/recovery
           // states require durable intent recovery and are never blindly retried.
@@ -1710,7 +1802,7 @@ export class AtomicCoordinator {
   private async observeLightningForRecovery(
     record: SovereignExecutionRecord
   ): Promise<LightningRecoveryObservation> {
-    const paymentHash = record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '');
+    const paymentHash = (record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '')).toLowerCase();
     try {
       return {
         kind: 'FOUND',

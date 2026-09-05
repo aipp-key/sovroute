@@ -1715,9 +1715,9 @@ export class SqlitePersistence {
 
     if (updates.holdInvoice) {
       updatedRecord.holdInvoice = {
-        ...existing.holdInvoice!,
+        ...(existing.holdInvoice ?? {}),
         ...updates.holdInvoice,
-      };
+      } as HoldInvoice;
     }
 
     const setClauses: string[] = ['updated_at = ?'];
@@ -1738,6 +1738,10 @@ export class SqlitePersistence {
     if (updates.reservationStatus !== undefined) {
       setClauses.push('reservation_status = ?');
       values.push(updates.reservationStatus);
+    }
+    if (updates.holdInvoice?.paymentHash !== undefined) {
+      setClauses.push('payment_hash = ?');
+      values.push(updates.holdInvoice.paymentHash.replace(/^0x/, '').toLowerCase());
     }
     if (updates.holdInvoice?.bolt11 !== undefined) {
       setClauses.push('bolt11 = ?');
@@ -1959,11 +1963,11 @@ export class SqlitePersistence {
 
   private mapRowToSovereignRecord(row: Record<string, unknown>): SovereignExecutionRecord {
     let holdInvoice: HoldInvoice | undefined;
-    if (row.bolt11) {
+    if (row.bolt11 || row.lightning_invoice_state) {
       holdInvoice = {
         paymentHash: (row.payment_hash as string) || (row.hash_lock as string).replace(/^0x/, ''),
-        bolt11: row.bolt11 as string,
-        amountSats: BigInt(row.amount_sats as string),
+        bolt11: (row.bolt11 as string) || '',
+        amountSats: BigInt((row.amount_sats as string) || '0'),
         cltvExpiryBlocks: Number(row.cltv_expiry_blocks || 144),
         expiryHeight: row.lightning_expiry_height ? Number(row.lightning_expiry_height) : undefined,
         state: (row.lightning_invoice_state as any) || 'OPEN',
@@ -2351,6 +2355,36 @@ export class SqlitePersistence {
 
   public commitLiquidityReservation(reservationId: string): void {
     this.transitionLiquidityReservation(reservationId, ['RESERVED'], 'COMMITTED');
+  }
+
+  public commitReservationAndAdvanceSwapToFunded(reservationId: string, swapId: string): void {
+    this.beginImmediateWithRetry();
+    try {
+      const now = new Date().toISOString();
+      const row = this.db
+        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+        .get(reservationId) as { status: string } | undefined;
+      if (row && (row.status === 'RESERVED' || row.status === 'COMMITTED')) {
+        this.db
+          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
+          .run('COMMITTED', now, reservationId);
+      }
+      this.db
+        .prepare(`
+          UPDATE sovereign_swaps
+          SET reservation_status = 'COMMITTED',
+              state = CASE WHEN state = 'EVM_FUNDING_PENDING' THEN 'EVM_FUNDED' ELSE state END,
+              updated_at = ?
+          WHERE id = ?
+        `)
+        .run(now, swapId);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
   }
 
   public releaseLiquidityReservation(reservationId: string): void {

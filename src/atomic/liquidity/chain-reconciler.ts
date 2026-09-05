@@ -495,10 +495,15 @@ export class ChainInventoryReconciler {
         );
       }
 
-      // Status 1: LOCKED (active funded HTLC) -> ensure reservation committed
+      // Status 1: LOCKED (active funded HTLC) -> ensure reservation committed and swap advanced
       if (status === 1) {
-        if (swap.reservationId && swap.reservationStatus === 'RESERVED') {
-          this.persistence.commitLiquidityReservation(swap.reservationId);
+        if (swap.reservationId) {
+          this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+        } else if (swap.state === SovereignAtomicState.EVM_FUNDING_PENDING) {
+          this.persistence.updateSovereignSwap(swap.id, {
+            state: SovereignAtomicState.EVM_FUNDED,
+            reservationStatus: 'COMMITTED',
+          });
         }
       }
       // Status 2: CLAIMED onchain
@@ -555,7 +560,11 @@ export class ChainInventoryReconciler {
           const outcome = await txManager.reconcileIntent(intent.id);
           if (outcome.status === 'CONFIRMED') {
             if (swap && swap.reservationId) {
-              this.persistence.commitLiquidityReservation(swap.reservationId);
+              if (swap.state === SovereignAtomicState.EVM_FUNDING_PENDING) {
+                this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+              } else {
+                this.persistence.commitLiquidityReservation(swap.reservationId);
+              }
             }
           } else if (
             outcome.status === 'REVERTED' ||

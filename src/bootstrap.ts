@@ -36,7 +36,7 @@ import {
   type IReconciledLiquidityInventory,
   type IChainCapacityProvider,
   type InventoryReadinessState,
-  SovereignAtomicState,
+  isNonTerminalSovereignAtomicState,
 } from './atomic/types.ts';
 import { SqliteLiquidityInventory } from './atomic/liquidity/sqlite-inventory.ts';
 import { BASE_SEPOLIA_CHAIN_ID } from './atomic/evm/base-guard.ts';
@@ -220,25 +220,7 @@ async function bootstrapProductionRouterInternal(
   // Inspect non-terminal swaps in persistence
   const activeSwaps = persistence.listNonTerminalSovereignSwaps();
   const hasRecoverySwaps = activeSwaps.some(
-    (s) =>
-      s.recoveryRequired ||
-      s.state === SovereignAtomicState.RECOVERY_REQUIRED ||
-      s.state === SovereignAtomicState.MANUAL_REVIEW ||
-      s.state === SovereignAtomicState.LIGHTNING_HELD ||
-      s.state === SovereignAtomicState.EVM_FUNDED ||
-      s.state === SovereignAtomicState.REFUND_ELIGIBLE ||
-      s.state === SovereignAtomicState.EVM_REFUND_PENDING ||
-      s.state === SovereignAtomicState.EVM_REFUND_CONFIRMED ||
-      s.state === SovereignAtomicState.LIGHTNING_CANCEL_PENDING ||
-      s.state === SovereignAtomicState.CLAIMING ||
-      s.state === SovereignAtomicState.EVM_CLAIM_CONFIRMED ||
-      s.state === SovereignAtomicState.LIGHTNING_SETTLED ||
-      s.state === SovereignAtomicState.DESTINATION_PENDING ||
-      s.state === SovereignAtomicState.INVOICE_CREATED ||
-      (s.state === SovereignAtomicState.EVM_FUNDING_PENDING && s.evmSwapKey && (() => {
-        const intent = persistence.getEvmIntentBySwapKey(s.evmSwapKey, 'FUND');
-        return intent && !['CREATED', 'NONCE_RESERVED', 'DISPATCHING', 'PENDING', 'CONFIRMED'].includes(intent.status);
-      })())
+    (s) => s.recoveryRequired || isNonTerminalSovereignAtomicState(s.state)
   );
 
   if (bootResult.readinessState !== 'READY' && !hasRecoverySwaps) {

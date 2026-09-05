@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,6 +17,7 @@ import {
   BASE_SEPOLIA_TEST_POLICY,
   LiquidityDeficitError,
   InventoryNotReadyError,
+  LightningInvoiceNotFoundError,
   type HoldInvoice,
   type HoldInvoiceState,
   type EvmHtlcState,
@@ -76,6 +77,7 @@ class ConfigurableLightning extends FakeLightningAtomicBackend {
       bolt11: `lnbc...${clean.slice(0, 8)}`,
       amountSats: 10_000n,
       cltvExpiryBlocks: 144,
+      expiryHeight: 800000 + 200,
       state,
       createdAt: new Date(),
       settledAt: state === 'SETTLED' ? new Date() : undefined,
@@ -164,27 +166,64 @@ function getValidBootstrapConfig(dbFilename: string) {
   };
 }
 
-function createMockBasePublicClient(operatorBalanceUnits: bigint = 100_000_000n) {
+const pinnedHtlcBytecode = JSON.parse(
+  readFileSync(join(process.cwd(), 'artifacts', 'contracts', 'HtlcErc20.sol', 'HtlcErc20.json'), 'utf8')
+).deployedBytecode as string;
+
+function createMockBasePublicClient(
+  operatorBalanceUnits: bigint = 100_000_000n,
+  htlcStateOverrides?: any
+) {
+  let broadcastCount = 0;
   return {
-    getBlockNumber: async () => 1000,
+    getBroadcastCount: () => broadcastCount,
+    getChainId: async () => BASE_SEPOLIA_CHAIN_ID,
+    getBlockNumber: async () => 1000n,
+    getBlock: async () => ({
+      number: 1000n,
+      hash: '0x' + 'aa'.repeat(32),
+      timestamp: 1700000000n,
+    }),
     getBalance: async () => 1_000_000_000_000_000_000n,
+    getCode: async () => '0x' + '12'.repeat(100),
+    getBytecode: async () => pinnedHtlcBytecode,
     readContract: async (args: any) => {
+      if (args.functionName === 'decimals') {
+        return 6;
+      }
       if (args.functionName === 'balanceOf') {
         return operatorBalanceUnits;
       }
       if (args.functionName === 'getHtlc') {
+        const overrides = htlcStateOverrides;
+        if (overrides) {
+          const status = overrides.status ?? (overrides.completed ? 2 : overrides.refunded ? 3 : overrides.funded ? 1 : 0);
+          return {
+            status,
+            amount: overrides.amount ?? 0n,
+            funded: status === 1 || status === 2 || status === 3,
+            completed: status === 2,
+            refunded: status === 3,
+            timelock: overrides.timelock ?? 0n,
+            ...overrides,
+          };
+        }
         return {
+          status: 0,
+          amount: 0n,
           funded: false,
           completed: false,
           refunded: false,
-          amount: 0n,
           timelock: 0n,
         };
       }
       return 0n;
     },
     getTransactionReceipt: async () => null,
-    sendRawTransaction: async () => '0x' + '99'.repeat(32),
+    sendRawTransaction: async () => {
+      broadcastCount++;
+      return '0x' + '99'.repeat(32);
+    },
   };
 }
 
@@ -1414,10 +1453,999 @@ describe('RECOVERY BOOTSTRAP & CROSS-RAIL TERMINALITY CLOSURE', () => {
 
       res.persistence.close();
     });
+
+    it('3.3: Production Base mock proves chain ID = 84532, canonical USDC, decimals = 6, and HTLC bytecode validation PASS', async () => {
+      const basePublicClient = createMockBasePublicClient(100_000_000n);
+      const backend = BaseSepoliaAtomicBackend.createForTesting({
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+        htlcAddress: '0x1111111111111111111111111111111111111111',
+        tokenAddress: OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS,
+        operatorPrivateKey: '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        persistence,
+        finalityPolicy: { policyTag: 'BASE_SEPOLIA_TEST_POLICY', requiredConfirmations: 2 },
+      }, basePublicClient as any);
+
+      await assert.doesNotReject(() => backend.ensureGuards());
+      const verifyRes = await backend.verifyChainAndToken(BASE_SEPOLIA_CHAIN_ID, token);
+      assert.strictEqual(verifyRes.valid, true);
+    });
+
+    it('3.4: True environment:production + healthy Base transport guards + PLAN_PREPARED recovery', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'prod-plan-prep-exec';
+      const hashLock = '0x' + '84'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'prod-plan-prep-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-prod-plan');
+
+      const config = getValidBootstrapConfig(dbPath);
+      config.environment = 'production';
+
+      const basePublicClient = createMockBasePublicClient(100_000_000n);
+      const cleanHash = hashLock.replace(/^0x/, '').toLowerCase();
+      let createdInvoices = 0;
+      const lndClient = createMockLndClient({
+        lookupInvoice: async (hash: string) => {
+          if (hash === cleanHash) {
+            return { state: 'OPEN', value: '10000', r_hash: cleanHash, payment_request: 'lnbc100u...' } as any;
+          }
+          throw new LndRestError(404, 'not found', '');
+        },
+        addHoldInvoice: async () => {
+          createdInvoices++;
+          return { payment_request: 'lnbc...' } as any;
+        },
+      });
+
+      const res = await bootstrapProductionRouterForTesting(config, {
+        basePublicClient,
+        lndClient,
+      });
+
+      assert.ok(res.coordinator instanceof AtomicCoordinator);
+      assert.ok(res.evmBackend instanceof BaseSepoliaAtomicBackend);
+      assert.ok(res.reconciler instanceof ChainInventoryReconciler);
+      assert.ok(res.inventory instanceof SqliteLiquidityInventory);
+      assert.ok(res.lightningBackend instanceof LndLightningAtomicBackend);
+      assert.ok(res.persistence instanceof SqlitePersistence);
+
+      assert.strictEqual(res.isProcessRecoveryReady, true);
+      assert.strictEqual(createdInvoices, 0, 'Zero duplicate hold invoice calls');
+
+      const convergedSwap = persistence.getSovereignSwap(executionId)!;
+      assert.strictEqual(convergedSwap.state, SovereignAtomicState.INVOICE_CREATED);
+      assert.strictEqual(convergedSwap.reservationStatus, 'RESERVED');
+      assert.strictEqual(convergedSwap.recoveryRequired, false);
+      assert.ok(convergedSwap.holdInvoice);
+      assert.strictEqual(convergedSwap.holdInvoice.state, 'OPEN');
+
+      const resRecord = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRecord.status, 'RESERVED');
+
+      res.persistence.close();
+    });
+
+    it('3.5: True environment:production + healthy Base transport guards + EVM_FUNDING_PENDING CONFIRMED/LOCKED', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'prod-funded-exec';
+      const hashLock = '0x' + '85'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'prod-funded-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        evmHtlcId: '0x' + '11'.repeat(32),
+        refundLocktime: 1700003600,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-prod-funded');
+
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmIntentConfirmedByChainEvidence(intent.id, ('0x' + 'aa'.repeat(32)) as `0x${string}`);
+
+      const config = getValidBootstrapConfig(dbPath);
+      config.environment = 'production';
+
+      const basePublicClient = createMockBasePublicClient(100_000_000n, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        amount: 20_000_000n,
+        timelock: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      });
+      const cleanHash = hashLock.replace(/^0x/, '').toLowerCase();
+      const lndClient = createMockLndClient({
+        lookupInvoice: async (hash: string) => {
+          if (hash === cleanHash) {
+            return { state: 'ACCEPTED', value: '10000', r_hash: cleanHash } as any;
+          }
+          throw new LndRestError(404, 'not found', '');
+        },
+      });
+
+      const res = await bootstrapProductionRouterForTesting(config, {
+        basePublicClient,
+        lndClient,
+      });
+
+      assert.strictEqual(res.isProcessRecoveryReady, true);
+
+      const convergedSwap = persistence.getSovereignSwap(executionId)!;
+      assert.strictEqual(convergedSwap.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(convergedSwap.reservationStatus, 'COMMITTED');
+      assert.strictEqual(convergedSwap.recoveryRequired, false);
+
+      const resRecord = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRecord.status, 'COMMITTED');
+
+      res.persistence.close();
+    });
   });
 
   // =========================================================================
-  // SUITE 4: SEMANTIC CLEANUP 3 — LndLightningAtomicBackend.recoverAfterRestart()
+  // SUITE 4: PLAN_PREPARED & EVM_FUNDING_PENDING STARTUP STATE CONVERGENCE
+  // =========================================================================
+  describe('Suite 4: PLAN_PREPARED & EVM_FUNDING_PENDING Startup State Convergence', () => {
+    function setupCoordinator(lightning: ConfigurableLightning, evm: ConfigurableEvm) {
+      const reconciler = new ChainInventoryReconciler({
+        persistence,
+        capacityProvider: evm,
+        defaultTokenAddress: token,
+        expectedChainId: 84532,
+        policy: BASE_SEPOLIA_TEST_POLICY,
+      });
+      const inventory = new SqliteLiquidityInventory(persistence, { reconciler });
+      const coordinator = new AtomicCoordinator(lightning, evm, inventory, {
+        persistence,
+        finalityPolicy: evm.finalityPolicy,
+      });
+      return { coordinator, inventory, reconciler };
+    }
+
+    it('4.1: PLAN_PREPARED + LN invoice OPEN after restart discovers invoice, zero duplicate createHoldInvoice, reservation retained', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'plan-prep-open-exec';
+      const hashLock = '0x' + '91'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'OPEN');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+      const expectedFingerprint = (coordinator as any).computeEconomicFingerprint({
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        tokenAddress: (coordinator as any).defaultTokenAddress,
+        refundAddress: (coordinator as any).defaultRefundAddress,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'plan-prep-open',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, expectedFingerprint);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.INVOICE_CREATED);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+      assert.strictEqual(reconciled.recoveryRequired, false);
+      assert.ok(reconciled.holdInvoice);
+      assert.strictEqual(reconciled.holdInvoice.state, 'OPEN');
+      assert.strictEqual(fakeLightning.createCalls.length, 0, 'Zero duplicate hold invoices created');
+
+      const resRec = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRec.status, 'RESERVED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n);
+
+      // Subsequent prepareSwap with same idempotencyKey returns converged swap without duplicate createHoldInvoice
+      const prepared = await coordinator.prepareSwap({
+        idempotencyKey: 'plan-prep-open',
+        hashLock,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+      });
+      assert.strictEqual(prepared.id, executionId);
+      assert.strictEqual(fakeLightning.createCalls.length, 0, 'No duplicate invoice created on prepare retry');
+    });
+
+    it('4.2: PLAN_PREPARED + LN ACCEPTED converges to LIGHTNING_HELD and funds Base HTLC, zero duplicate invoice', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'plan-prep-accepted-exec';
+      const hashLock = '0x' + '92'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'plan-prep-acc',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-plan-acc');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(fakeLightning.createCalls.length, 0, 'Zero duplicate hold invoices created');
+      assert.ok(reconciled.holdInvoice);
+      assert.strictEqual(reconciled.holdInvoice.state, 'ACCEPTED');
+      // Coordinator advanced and funded EVM
+      assert.ok(
+        reconciled.state === SovereignAtomicState.EVM_FUNDING_PENDING ||
+        reconciled.state === SovereignAtomicState.EVM_FUNDED
+      );
+    });
+
+    it('4.3: PLAN_PREPARED + LN NOT_FOUND + Base authoritative absence releases reservation exactly once', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'plan-prep-absent-exec';
+      const hashLock = '0x' + '93'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'plan-prep-absent',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-plan-abs');
+
+      const fakeLightning = new ConfigurableLightning();
+      // default observeHoldInvoice throws LightningInvoiceNotFoundError
+      fakeLightning.observeHoldInvoice = async () => {
+        throw new LightningInvoiceNotFoundError(hashLock);
+      };
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.INVOICE_CANCELED);
+      assert.strictEqual(reconciled.reservationStatus, 'RELEASED');
+      assert.strictEqual(reconciled.recoveryRequired, false);
+
+      const resRec = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRec.status, 'RELEASED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 0n, 'R must be 0 after safe release');
+    });
+
+    it('4.4: PLAN_PREPARED + LN UNKNOWN marks RECOVERY_REQUIRED and retains reservation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'plan-prep-unknown-exec';
+      const hashLock = '0x' + '94'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'plan-prep-unk',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-plan-unk');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.observeHoldInvoice = async () => {
+        throw new Error('LND connection timeout');
+      };
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.RECOVERY_REQUIRED);
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+
+      const resRec = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRec.status, 'RESERVED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n, 'R must remain locked');
+    });
+
+    it('4.5: PLAN_PREPARED + Base FUNDED unexpectedly triggers fail-closed cross-rail recovery and retains reservation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'plan-prep-funded-exec';
+      const hashLock = '0x' + '95'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'plan-prep-funded',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-plan-fund');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'OPEN');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+        timelock: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const { coordinator } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.RECOVERY_REQUIRED);
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.match(reconciled.failureReason!, /CRITICAL_INVARIANT_VIOLATION.*Base HTLC is FUNDED.*reservation retained/);
+    });
+
+    it('4.6: EVM_FUNDING_PENDING + FUND CONFIRMED + Base LOCKED converges to EVM_FUNDED with reservation COMMITTED', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-conf-locked-exec';
+      const hashLock = '0x' + '96'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-conf-locked',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-locked');
+
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmIntentConfirmedByChainEvidence(intent.id, ('0x' + '96'.repeat(32)) as `0x${string}`);
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+        timelock: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(reconciled.reservationStatus, 'COMMITTED');
+      assert.strictEqual(reconciled.recoveryRequired, false);
+
+      const resRec = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRec.status, 'COMMITTED');
+      assert.strictEqual(await inventory.getCommittedBalance(token), 20_000_000n);
+      assert.strictEqual(await inventory.getReservedBalance(token), 0n);
+    });
+
+    it('4.7: Same EVM_FUNDING_PENDING scenario repeated after restart is idempotent with zero double-commit', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-idem-exec';
+      const hashLock = '0x' + '97'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-idem',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-idem');
+
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmIntentConfirmedByChainEvidence(intent.id, ('0x' + '97'.repeat(32)) as `0x${string}`);
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+        timelock: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled1 = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled1.state, SovereignAtomicState.EVM_FUNDED);
+
+      // Reconcile a second time (restart simulation)
+      const reconciled2 = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled2.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(reconciled2.reservationStatus, 'COMMITTED');
+
+      const resRec = persistence.getLiquidityReservation(reservation.reservationId)!;
+      assert.strictEqual(resRec.status, 'COMMITTED');
+      assert.strictEqual(await inventory.getCommittedBalance(token), 20_000_000n);
+      assert.strictEqual(await inventory.getReservedBalance(token), 0n);
+    });
+
+    it('4.8: EVM_FUNDING_PENDING + FUND PENDING runs recovery pass with zero blind retry and retains reservation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-pend-exec';
+      const hashLock = '0x' + '98'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-pend',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-pend');
+
+      persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      fakeEvm.observeHtlc = async () => ({
+        swapKey: evmSwapKey,
+        funded: false,
+        completed: false,
+        refunded: false,
+        balance: 0n,
+        timelock: 0,
+        blockTimestamp: 0,
+      } as any);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      // LN is ACCEPTED, EVM is not funded proven, but swap is EVM_FUNDING_PENDING with intent -> marks recovery required, NO blind retry!
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n);
+    });
+
+    it('4.9: EVM_FUNDING_PENDING + FUND FAILED runs recovery pass and retains reservation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-failed-exec';
+      const hashLock = '0x' + '99'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-failed',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-fail');
+
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmIntentFailed(intent.id, 'RPC_TIMEOUT');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n, 'Reservation must be retained');
+    });
+
+    it('4.10: EVM_FUNDING_PENDING + FUND REVERTED runs recovery pass and retains reservation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-revert-exec';
+      const hashLock = '0x' + '9a'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-revert',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-rev');
+
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmSimulationReverted(intent.id, 'OUT_OF_GAS');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n);
+    });
+
+    it('4.11: EVM_FUNDING_PENDING + NONCE_CONFLICT runs recovery pass and retains reservation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-nonce-conflict-exec';
+      const hashLock = '0x' + '9b'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-nonce-conf',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-nonce');
+
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmNonceConflict(intent.id, 'NONCE_ALREADY_USED');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n);
+    });
+
+    it('4.12: EVM_FUNDING_PENDING + missing FUND intent marks RECOVERY_REQUIRED, NOT READY, reservation retained', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'fund-missing-intent-exec';
+      const hashLock = '0x' + '9c'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'fund-missing-intent',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-fund-miss');
+
+      // Do NOT create FUND intent in persistence!
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, reconciler, inventory } = setupCoordinator(fakeLightning, fakeEvm);
+
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.RECOVERY_REQUIRED);
+      assert.strictEqual(reconciled.recoveryRequired, true);
+      assert.match(reconciled.failureReason!, /no durable FUND intent/);
+      assert.strictEqual(reconciled.reservationStatus, 'RESERVED');
+      assert.strictEqual(await reconciler.getReadinessState(token), 'NOT_READY');
+      assert.strictEqual(await inventory.getReservedBalance(token), 20_000_000n);
+    });
+
+    it('4.13: No new swap is accepted while unresolved recovery remains (prepareSwap rejected fail-closed)', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'unresolved-gate-exec';
+      const hashLock = '0x' + '9d'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'unresolved-gate',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.RECOVERY_REQUIRED,
+        recoveryRequired: true,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-unresolved');
+
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, reconciler } = setupCoordinator(fakeLightning, fakeEvm);
+
+      assert.strictEqual(await reconciler.getReadinessState(token), 'NOT_READY');
+
+      const initialReservations = persistence.listLiquidityReservations().length;
+      await assert.rejects(
+        () => coordinator.prepareSwap({
+          idempotencyKey: 'new-swap-attempt',
+          hashLock: '0x' + '9e'.repeat(32),
+          amountSats: 5000n,
+          expectedUsdcAmount: 5_000_000n,
+          claimingAddress: operator,
+          targetDestinationAddress: operator,
+        }),
+        (err: any) => err instanceof InventoryNotReadyError || err instanceof LiquidityDeficitError
+      );
+
+      assert.strictEqual(persistence.listLiquidityReservations().length, initialReservations);
+      assert.strictEqual(fakeLightning.createCalls.length, 0);
+    });
+
+    it('4.14: After all recovery resolves and inventory is healthy -> economic acceptance returns READY', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const executionId = 'resolve-clean-exec';
+      const hashLock = '0x' + '9f'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'resolve-clean',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.PLAN_PREPARED,
+        recoveryRequired: false,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'test-fp-resolve-clean');
+
+      const fakeLightning = new ConfigurableLightning();
+      fakeLightning.observeHoldInvoice = async () => {
+        throw new LightningInvoiceNotFoundError(hashLock);
+      };
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const { coordinator, reconciler } = setupCoordinator(fakeLightning, fakeEvm);
+
+      // Reconcile the swap to clean terminal cancellation
+      const reconciled = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(reconciled.state, SovereignAtomicState.INVOICE_CANCELED);
+      assert.strictEqual(reconciled.recoveryRequired, false);
+
+      // Reconcile inventory
+      await reconciler.reconcile();
+      assert.strictEqual(await reconciler.getReadinessState(token), 'READY');
+
+      // Now a new swap CAN be prepared successfully
+      const newSwap = await coordinator.prepareSwap({
+        idempotencyKey: 'new-clean-swap',
+        hashLock: '0x' + 'a1'.repeat(32),
+        amountSats: 5000n,
+        expectedUsdcAmount: 5_000_000n,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+      });
+      assert.ok(newSwap);
+      assert.strictEqual(newSwap.state, SovereignAtomicState.INVOICE_CREATED);
+    });
+  });
+
+  // =========================================================================
+  // SUITE 5: SEMANTIC CLEANUP 3 — LndLightningAtomicBackend.recoverAfterRestart()
   // =========================================================================
   describe('Semantic Cleanup 3: LndLightningAtomicBackend.recoverAfterRestart()', () => {
     function mockLndClient(lookupFn: (hash: string) => Promise<any>): ILndClient {
