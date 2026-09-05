@@ -7,17 +7,74 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ILiquidityInventory } from '../types.ts';
+import type { ILiquidityInventory, InventoryReadinessState } from '../types.ts';
+import {
+  InventoryNotReadyError,
+  LiquidityDeficitError,
+  EvmInventoryUnavailableError,
+} from '../types.ts';
 import type { SqlitePersistence, LiquidityReservationRecord } from '../../persistence/sqlite.ts';
+import type { ChainInventoryReconciler } from './chain-reconciler.ts';
+
+export interface SqliteLiquidityInventoryOptions {
+  reconciler?: ChainInventoryReconciler | undefined;
+}
 
 export class SqliteLiquidityInventory implements ILiquidityInventory {
   private readonly persistence: SqlitePersistence;
+  private reconciler?: ChainInventoryReconciler | undefined;
 
-  constructor(persistence: SqlitePersistence, initialBalances?: Record<string, bigint>) {
+  constructor(
+    persistence: SqlitePersistence,
+    initialBalancesOrOptions?: Record<string, bigint> | SqliteLiquidityInventoryOptions,
+    options?: SqliteLiquidityInventoryOptions
+  ) {
     this.persistence = persistence;
-    if (initialBalances) {
-      for (const [token, amt] of Object.entries(initialBalances)) {
-        this.setConfirmedBalance(token, amt);
+    if (initialBalancesOrOptions && 'reconciler' in initialBalancesOrOptions) {
+      this.reconciler = (initialBalancesOrOptions as SqliteLiquidityInventoryOptions).reconciler;
+    } else {
+      this.reconciler = options?.reconciler;
+      if (initialBalancesOrOptions) {
+        for (const [token, amt] of Object.entries(initialBalancesOrOptions as Record<string, bigint>)) {
+          this.setConfirmedBalance(token, amt);
+        }
+      }
+    }
+  }
+
+  public setReconciler(reconciler: ChainInventoryReconciler): void {
+    this.reconciler = reconciler;
+  }
+
+  public getReconciler(): ChainInventoryReconciler | undefined {
+    return this.reconciler;
+  }
+
+  public async getReadinessState(tokenAddress?: string): Promise<InventoryReadinessState> {
+    if (this.reconciler) {
+      return this.reconciler.getReadinessState(tokenAddress);
+    }
+    return this.persistence.getInventoryReadinessState(tokenAddress ?? '0x0000000000000000000000000000000000000000');
+  }
+
+  public async getSafeHeadroom(tokenAddress: string): Promise<bigint> {
+    if (this.reconciler) {
+      return this.reconciler.getSafeHeadroom(tokenAddress);
+    }
+    return this.persistence.getSafeHeadroom(tokenAddress);
+  }
+
+  public async reconcile(tokenAddress?: string): Promise<void> {
+    if (this.reconciler) {
+      await this.reconciler.reconcile(tokenAddress);
+    }
+  }
+
+  public async reconcileOnBoot(tokenAddress?: string): Promise<void> {
+    if (this.reconciler) {
+      const res = await this.reconciler.reconcileOnBoot(tokenAddress);
+      if (res.readinessState !== 'READY') {
+        throw new Error(`INVENTORY_NOT_READY: Startup reconciliation failed with state ${res.readinessState}: ${res.error ?? 'UNKNOWN'}`);
       }
     }
   }
@@ -27,6 +84,18 @@ export class SqliteLiquidityInventory implements ILiquidityInventory {
     tokenAddress: string,
     executionId?: string
   ): Promise<{ reservationId: string; reserved: boolean }> {
+    if (this.reconciler) {
+      const state = this.reconciler.getReadinessState(tokenAddress);
+      if (state !== 'READY') {
+        if (state === 'DEFICIT') {
+          throw new LiquidityDeficitError(`Operator inventory is in DEFICIT for token ${tokenAddress}`);
+        } else if (state === 'UNKNOWN' || state === 'DEGRADED') {
+          throw new EvmInventoryUnavailableError(`Operator inventory state is ${state} for token ${tokenAddress}`);
+        } else {
+          throw new InventoryNotReadyError(`Operator inventory is ${state} for token ${tokenAddress}`);
+        }
+      }
+    }
     const execId = executionId ?? `anon_${randomUUID()}`;
     return this.persistence.reserveLiquidity(execId, tokenAddress, amountUnits);
   }
@@ -39,11 +108,19 @@ export class SqliteLiquidityInventory implements ILiquidityInventory {
     this.persistence.commitLiquidityReservation(reservationId);
   }
 
+  async settle(reservationId: string): Promise<void> {
+    this.persistence.settleLiquidityReservation(reservationId);
+  }
+
   async restoreRefund(reservationId: string): Promise<void> {
     this.persistence.restoreRefundLiquidityReservation(reservationId);
   }
 
   async getAvailableBalance(tokenAddress: string): Promise<bigint> {
+    const snapshot = this.persistence.getLatestChainInventorySnapshot(tokenAddress);
+    if (snapshot) {
+      return this.persistence.getSafeHeadroom(tokenAddress);
+    }
     return this.persistence.getAvailableOperatorBalance(tokenAddress);
   }
 

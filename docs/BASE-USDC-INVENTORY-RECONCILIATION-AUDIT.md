@@ -307,7 +307,7 @@ The router operates in an environment where treasury operations, chain reorgs, a
 - **Scenario**: Operator transfers 5,000 USDC from an external exchange into the operator EOA.
 - **Behavior**:
   - $W$ increases by 5,000 USDC on Base.
-  - The router must not immediately assume these funds are spendable until **Finality Confirmations** ($K \ge 2$ on Base Sepolia, $K \ge 64$ or finalized checkpoint on Mainnet) are satisfied.
+  - The router must not immediately assume these funds are spendable until **Finality Confirmations** (*Configurable Policy via `EvmFinalityPolicy.requiredConfirmations`, e.g., testnet policy or mainnet safe finality*) are satisfied.
   - Once final, the newly observed wallet balance expands available headroom for quotes:
     $$\Delta \text{Headroom} = +5,000 \text{ USDC}$$
   - No SQLite reservation records are mutated.
@@ -324,9 +324,9 @@ The router operates in an environment where treasury operations, chain reorgs, a
      - Swaps with Lightning HTLCs already `HELD` are prioritized for funding if $W$ suffices; if $W$ is strictly insufficient to fund a held swap, the Lightning invoice is canceled immediately to prevent customer fund stranding.
 
 ### 5.3 Deep Chain Reorg on Base
-- **Scenario**: A 3-block reorg occurs. A block containing an `HtlcErc20.fund` transaction is replaced by an alternate branch where the transaction is not included.
+- **Scenario**: A chain reorg occurs. A block containing an `HtlcErc20.fund` transaction is replaced by an alternate branch where the transaction is not included.
 - **Behavior**:
-  1. All onchain state reads MUST enforce `EvmFinalityPolicy` (`requiredConfirmations >= 2` on Base Sepolia).
+  1. All onchain state reads MUST enforce `EvmFinalityPolicy` (*Configurable Policy: using configured `requiredConfirmations`*).
   2. If a previously observed funding transaction is reorged out:
      - The transaction manager detects receipt invalidation.
      - The swap state falls back from `EVM_FUNDED` to `EVM_FUNDING_PENDING`.
@@ -336,10 +336,10 @@ The router operates in an environment where treasury operations, chain reorgs, a
 ### 5.4 Base RPC Degradation, Replica Lag, and Outages
 - **Scenario**: Public Base RPC load-balancer routes consecutive requests to out-of-sync nodes, returning stale block numbers or temporary 404s for newly mined transactions.
 - **Mitigation & Handling**:
-  1. **Monotonic Block Enforcement**: The client tracks `highestSeenBlockNumber`. If an RPC endpoint returns a block number $B < \text{highestSeenBlockNumber} - 2$, the response is rejected as `RPC_REPLICA_LAG`.
-  2. **Circuit Breaker**: If 3 consecutive RPC requests fail or timeout (> 5000ms), the router trips its EVM circuit breaker:
+  1. **Monotonic Block Enforcement**: The client tracks `highestSeenBlockNumber`. If an RPC endpoint returns a block number $B < \text{highestSeenBlockNumber} - \text{ReorgLagTolerance}$, the response is rejected as `RPC_REPLICA_LAG`.
+  2. **Circuit Breaker (*Candidate / Configurable Policy*)**: If consecutive RPC requests fail or timeout beyond configured thresholds (e.g. `maxReconciliationRetries` or RPC timeout policy), the router trips its EVM circuit breaker:
      - Quoting is temporarily suspended (`EVM_GATEWAY_UNAVAILABLE`).
-     - In-flight operations pause and retry with exponential backoff.
+     - In-flight operations pause and retry with policy-defined backoff.
      - Zero state mutations occur in SQLite until RPC connectivity is re-certified.
 
 ### 5.5 In-Flight Funding Transaction with UNKNOWN Status
@@ -347,9 +347,9 @@ The router operates in an environment where treasury operations, chain reorgs, a
 - **Handling**:
   - The transaction manager tracks nonces deterministically.
   - The router never broadcasts a new funding transaction with the same nonce blindly, nor does it skip the nonce.
-  - After a timeout window ($T_{stale} = 60\text{s}$), the reconciler inspects onchain account nonce:
+  - After a policy-defined timeout window ($T_{stale}$ configured via transaction policy), the reconciler inspects onchain account nonce:
     - If `onchain_nonce > tx_nonce`: Transaction mined; query receipt by hash.
-    - If `onchain_nonce == tx_nonce`: Transaction is genuinely unmined. The manager submits a speed-up (same nonce, higher gas price) or cancels it with a zero-value self-transfer before releasing the reservation.
+    - If `onchain_nonce == tx_nonce`: Transaction is genuinely unmined. (*Candidate Policy: The manager submits a speed-up with higher gas price, cancels with safe self-transfer, or holds UNKNOWN fail-closed until resolution*).
   - Reservation remains locked in `COMMITTED` or `RESERVED` until nonce resolution is absolute.
 
 ---
@@ -509,7 +509,7 @@ Any future implementation of Base USDC inventory reconciliation MUST strictly sa
 - [ ] **REC-3: Reconcile-on-Boot Precondition**  
   The router must refuse to open its API port or accept new quotes until all five phases of the Reconcile-on-Boot protocol pass with zero errors.
 - [ ] **REC-4: Finality Policy Enforcement**  
-  Onchain balance increases (deposits, refunds) must not expand spendable headroom until confirmed by at least `requiredConfirmations` blocks (minimum 2 on Base Sepolia, minimum finalized epoch on Mainnet).
+  Onchain balance increases (deposits, refunds) must not expand spendable headroom until confirmed by the configured `EvmFinalityPolicy.requiredConfirmations` blocks (e.g. testnet policy or mainnet safe finality checkpoint).
 - [ ] **REC-5: Orphan Escrow Immediate Quarantine**  
   Any onchain HTLC funded by the operator that cannot be matched to a valid execution record in SQLite must be quarantined, flagged as `ORPHAN_ESCROW`, and prevent router startup until manually reviewed or automatically scheduled for refund.
 - [ ] **REC-6: In-Memory Map Rehydration**  

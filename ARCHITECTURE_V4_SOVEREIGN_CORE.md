@@ -622,3 +622,49 @@ Operator inventory and reservations are persisted in SQLite WAL mode:
 - **Ambiguous Invoices**: If LND hold invoice creation times out or yields an ambiguous network error, the reservation is retained in `RESERVED` status. It is NEVER blindly released until LND invoice state is authoritatively queried.
 - **Node Reboot**: On restart, operator inventory balances and active reservations are reconstructed authoritatively from SQLite. Idempotent requests return the existing reservation with zero double-reservation.
 
+---
+
+## 38. BASE USDC ON-CHAIN INVENTORY RECONCILIATION & STARTUP SAFETY
+
+### 1. Chain-Derived Spendable Capacity vs. Local Ledger
+In earlier iterations, SQLite `operator_inventory.confirmed_balance` was maintained as an internal ledger value. SovRoute now enforces that spendable liquidity is strictly derived from verified onchain Base state:
+- The operator execution wallet balance is observed directly from the canonical Circle USDC ERC-20 contract (`balanceOf(walletAddress)`).
+- Local SQLite persistence stores periodic immutable snapshots (`chain_inventory_snapshots`) containing observed block height, block hash, timestamp, confirmed wallet balance, finalized wallet balance, active reservations, unresolved intents, safe headroom, and readiness state.
+
+### 2. Elimination of the Double-Counting Trap
+In standard ERC-20 HTLC architectures (including `contracts/HtlcErc20.sol`), escrow funding transfers USDC out of the operator wallet into the contract via `transferFrom`.
+- Therefore, the on-chain wallet balance $W_{\text{onchain}}$ **already excludes** committed escrow capital ($C$).
+- Double-counting occurs if an accounting formula subtracts committed escrows from the wallet balance: $W_{\text{onchain}} - C - R$. This results in artificially deflated headroom and false inventory starvation.
+- **Authoritative Safe Headroom Formula**:
+  $$\text{Headroom} = W_{\text{safe}} - R - P$$
+  where:
+  - $W_{\text{safe}} = \min(W_{\text{latest}}, W_{\text{finalized}})$ (asymmetric deposit finality)
+  - $R = \sum \text{amountUnits}$ for all active `RESERVED` liquidity reservations
+  - $P = \sum \text{amountUnits}$ for unresolved/in-flight funding intents
+  - Committed HTLC escrows ($C$) are tracked independently for auditability and never subtracted from $W_{\text{safe}}$.
+
+### 3. Five-Phase Reconcile-on-Boot Architecture
+Upon process boot or scheduled periodic reconciliation, `ChainInventoryReconciler` executes a sequential 5-phase gate:
+1. **Phase 1 — Verification of Chain Identity & Canonical Token**: Asserts connected RPC reports expected chain ID (e.g., 84532/8453) and contract bytecode matches canonical native Circle USDC.
+2. **Phase 2 — Asymmetric Wallet Capacity Observation**: Concurrently queries latest block height, latest wallet balance ($W_{\text{latest}}$), and finalized block height/balance ($W_{\text{finalized}}$). Enforces $W_{\text{safe}} = \min(W_{\text{latest}}, W_{\text{finalized}})$.
+3. **Phase 3 — Durable Binding Rehydration**: Loads all historical `htlc_id` bindings from `sovereign_swaps` into the EVM backend memory map, ensuring crash/restart continuity.
+4. **Phase 4 — Active Swap On-Chain Status Reconciliation**: Inspects on-chain HTLC state for all pending swaps (`EVM_FUNDED`, `CLAIMED`, `REFUNDED`), identifying uncommitted funding, claims, or refunds.
+5. **Phase 5 — Readiness Evaluation & Snapshot Persistence**: Computes Safe Headroom under SQLite `BEGIN IMMEDIATE`, sets readiness state (`READY`, `DEFICIT`, `NOT_READY`, `UNKNOWN`, `DEGRADED`), and writes an immutable snapshot to `chain_inventory_snapshots`.
+
+### 4. Fail-Closed Readiness States
+- `NOT_READY`: Initial startup state or pre-reconciliation phase.
+- `RECONCILING`: Active reconciliation cycle in flight.
+- `READY`: All 5 phases passed; snapshot fresh; $W_{\text{safe}} \ge R + P$.
+- `DEFICIT`: $W_{\text{safe}} < R + P$ (e.g., unexpected external withdrawal). New reservations are immediately rejected.
+- `UNKNOWN`: RPC timeout, transport failure, or unverified on-chain response.
+- `DEGRADED`: Chain ID mismatch, token contract mismatch, or stale snapshot exceeding `staleSnapshotToleranceMs`.
+
+Both `bootstrapProductionRouter` and `AtomicCoordinator.prepareSwap` strictly require readiness `READY` to proceed. Any other state aborts fail-closed.
+
+### 5. Durable Swap-to-HTLC Identity
+`sovereign_swaps` includes a persistent `htlc_id` column. In-memory lookup maps (`swapKeyToHtlcId`) are non-authoritative caches populated at boot from SQLite. If the memory cache is cleared or restarted, the backend transparently falls back to SQLite durable query.
+
+### 6. External Treasury Decoupling
+Operator USDC inventory provisioning is an asynchronous operational task. CCTP cross-chain minting and decentralized exchange (DEX) liquidity operations are strictly decoupled from the customer swap critical path.
+
+

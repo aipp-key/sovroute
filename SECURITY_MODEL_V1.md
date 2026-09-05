@@ -1313,3 +1313,31 @@ Moving from local devnet (Hardhat instant automining) to a public rollup (Base S
 * **LIQ-15 (Balance Conservation)**: At all times and across all operations, the conservation invariant holds strictly:
   $$\text{confirmedBalance} = \text{availableBalance} + \text{reservedBalance} + \text{committedBalance}$$
 
+---
+
+## 30. BASE USDC ON-CHAIN INVENTORY RECONCILIATION INVARIANTS (REC-1 THROUGH REC-20)
+
+### On-Chain Reconciliation Security Invariants
+
+* **REC-1 (Double-Counting Trap Elimination)**: Committed HTLC escrows ($C$) are debited from the operator wallet balance at the moment of onchain contract funding (`transferFrom`). Therefore, spendable headroom is $W_{\text{safe}} - R - P$, NEVER $W_{\text{safe}} - C - R - P$. Double-subtracting committed escrows from onchain wallet balance is an accounting defect and strictly prohibited.
+* **REC-2 (Authoritative On-Chain Truth)**: `operator_inventory.confirmed_balance` and spendable headroom must be authoritatively anchored to observed Base on-chain USDC contract balance (`balanceOf`), never derived solely from unverified local ledger entries.
+* **REC-3 (Fail-Closed Readiness States)**: Inventory readiness transitions deterministically through explicit states: `NOT_READY`, `RECONCILING`, `READY`, `DEFICIT`, `UNKNOWN`, `DEGRADED`. A router in any state other than `READY` must reject new swap obligations fail-closed.
+* **REC-4 (Startup Reconciliation Gate)**: On process startup, Router initialization must block financial operations until a 5-phase on-chain reconciliation completes and transitions inventory to `READY`.
+* **REC-5 (Preparation Gate Enforcement)**: `prepareSwap()` must verify inventory readiness is `READY` before generating a Lightning hold invoice or accepting counterparty commitments.
+* **REC-6 (Chain & Token Integrity Verification)**: Reconciliation must strictly assert that the active RPC provider reports the configured Base chain ID (e.g., 84532 or 8453) and that the ERC-20 token contract matches the canonical native Circle USDC address.
+* **REC-7 (Asymmetric Deposit Finality)**: Unfinalized inbound deposits cannot increase spendable headroom. Available wallet balance is bounded by $W_{\text{safe}} = \min(W_{\text{latest}}, W_{\text{finalized}})$.
+* **REC-8 (Conservative Outflow & Reorg Handling)**: Any external withdrawal or chain reorganization that decreases $W_{\text{latest}}$ contracts spendable headroom immediately, without waiting for finalized block depth.
+* **REC-9 (Active Reservation Single-Deduction)**: Active un-funded `RESERVED` obligations ($R$) are subtracted from spendable wallet balance exactly once.
+* **REC-10 (Unresolved Funding Intent Deductions)**: Unresolved or in-flight funding intents ($P$) are treated conservatively as outstanding obligations and subtracted from spendable headroom exactly once until reconciled.
+* **REC-11 (Committed Escrow Audit Tracking)**: Committed HTLC capital ($C$) is tracked for global auditability and balance reconciliation, but never double-deducted from spendable on-chain balance.
+* **REC-12 (Verified Refund Restoration)**: An on-chain Base HTLC refund restores operator wallet capacity only upon verified onchain contract state/event confirmation, never by speculative local optimistic increments.
+* **REC-13 (Client Claim Irreversibility)**: A client claim reveals the preimage and permanently transfers USDC to the counterparty; it never restores operator spendable inventory.
+* **REC-14 (Durable Swap-HTLC Identity)**: The mapping between internal swap keys and on-chain `htlcId` is durably persisted in SQLite (`sovereign_swaps.htlc_id`) and rehydrated at startup; in-memory lookup maps are non-authoritative transient caches.
+* **REC-15 (RPC Ambiguity as Non-Authorizing UNKNOWN)**: RPC timeouts, network disconnects, or malformed responses during balance observation transition inventory to `UNKNOWN` or `DEGRADED`, preventing new swap creation.
+* **REC-16 (Idempotent Reconciliation)**: Repeated or concurrent executions of the reconciliation cycle produce deterministic state transitions and idempotent snapshot persistence.
+* **REC-17 (Deficit Freezes New Obligations)**: When $W_{\text{safe}} < R + P$, the system enters `DEFICIT` state and refuses all new swap reservations until re-balanced.
+* **REC-18 (Multi-Process Headroom Invariant)**: Total concurrent reservations across all worker processes cannot exceed chain-verified safe headroom.
+* **REC-19 (Post-Broadcast Crash Safety)**: A crash occurring between transaction broadcast and local commit must reconcile on-chain contract state before retrying funding or releasing reservations.
+* **REC-20 (Prohibition of Stale Local Authority)**: Stale SQLite snapshots exceeding the configured staleness threshold (`staleSnapshotToleranceMs`) cannot authorize new financial commitments without an updated onchain observation.
+
+

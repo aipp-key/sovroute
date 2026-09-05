@@ -31,6 +31,11 @@ import {
   type SovereignSwapTransition,
   type HoldInvoice,
   type LiquidityReservationStatus,
+  InventoryReadinessState,
+  type ChainInventorySnapshot,
+  InventoryNotReadyError,
+  LiquidityDeficitError,
+  EvmInventoryUnavailableError,
 } from '../atomic/types.ts';
 
 export interface LiquidityReservationRecord {
@@ -281,6 +286,21 @@ export class SqlitePersistence {
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_liquidity_reservations_exec ON liquidity_reservations(execution_id);
       CREATE INDEX IF NOT EXISTS idx_liquidity_reservations_token_status ON liquidity_reservations(token_address, status);
+
+      CREATE TABLE IF NOT EXISTS chain_inventory_snapshots (
+        token_address TEXT PRIMARY KEY,
+        chain_id INTEGER NOT NULL,
+        operator_address TEXT NOT NULL,
+        wallet_balance_latest TEXT NOT NULL,
+        wallet_balance_finalized TEXT NOT NULL,
+        safe_wallet_capacity TEXT NOT NULL,
+        latest_block_number INTEGER NOT NULL,
+        finalized_block_number INTEGER NOT NULL,
+        block_hash TEXT,
+        readiness_state TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
 
     // Safe additive migrations for existing DB
@@ -1971,6 +1991,57 @@ export class SqlitePersistence {
     }
   }
 
+  public getSafeHeadroom(tokenAddress: string): bigint {
+    const token = tokenAddress.toLowerCase();
+    const snapshot = this.getLatestChainInventorySnapshot(token);
+    if (!snapshot) return 0n;
+    if (snapshot.readinessState !== 'READY' && snapshot.readinessState !== 'DEFICIT') return 0n;
+    const reserved = this.getReservedOperatorBalance(token);
+    const unresolvedP = this.getUnresolvedFundingIntentsAmountInternal(token);
+    return snapshot.safeWalletCapacity - reserved - unresolvedP;
+  }
+
+  public getUnresolvedFundingIntentsAmount(tokenAddress: string): bigint {
+    return this.getUnresolvedFundingIntentsAmountInternal(tokenAddress.toLowerCase());
+  }
+
+  private getUnresolvedFundingIntentsAmountInternal(token: string): bigint {
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT swap_key, value_wei FROM evm_transaction_intents
+          WHERE action_type = 'FUND'
+            AND status IN ('CREATED', 'NONCE_RESERVED', 'DISPATCHING', 'PENDING')
+        `)
+        .all() as { swap_key: string; value_wei: string }[];
+
+      let sum = 0n;
+      for (const row of rows) {
+        const swap = this.db
+          .prepare('SELECT id, reservation_id, expected_usdc_amount, token_address FROM sovereign_swaps WHERE evm_swap_key = ?')
+          .get(row.swap_key) as { id: string; reservation_id: string; expected_usdc_amount: string; token_address?: string } | undefined;
+
+        if (swap && (!swap.token_address || swap.token_address.toLowerCase() === token)) {
+          if (swap.reservation_id) {
+            const res = this.db
+              .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+              .get(swap.reservation_id) as { status: string } | undefined;
+            if (res && res.status === 'RESERVED') {
+              // Already counted in R; do not double-subtract!
+              continue;
+            }
+          }
+          if (swap.expected_usdc_amount) {
+            sum += BigInt(swap.expected_usdc_amount);
+          }
+        }
+      }
+      return sum;
+    } catch {
+      return 0n;
+    }
+  }
+
   public reserveLiquidity(
     executionId: string,
     tokenAddress: string,
@@ -1999,29 +2070,83 @@ export class SqlitePersistence {
         }
       }
 
-      // 2. Compute available balance: CONFIRMED - ACTIVE_RESERVED - COMMITTED
-      const confirmedRow = this.db
-        .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
-        .get(token) as { confirmed_balance: string } | undefined;
-      const confirmed = confirmedRow ? BigInt(confirmedRow.confirmed_balance) : 0n;
+      // 2. Determine available capacity
+      // Check if chain_inventory_snapshots has a record for this token
+      const snapshotRow = this.db
+        .prepare('SELECT * FROM chain_inventory_snapshots WHERE token_address = ?')
+        .get(token) as Record<string, unknown> | undefined;
 
-      const reservedRows = this.db
-        .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
-        .all(token, 'RESERVED') as { amount_units: string }[];
-      let activeReserved = 0n;
-      for (const r of reservedRows) {
-        activeReserved += BigInt(r.amount_units);
+      let available = 0n;
+
+      if (snapshotRow) {
+        const readiness = snapshotRow.readiness_state as string;
+        if (readiness === 'NOT_READY' || readiness === 'RECONCILING') {
+          this.db.exec('COMMIT');
+          throw new InventoryNotReadyError(`Operator inventory is currently ${readiness}`);
+        }
+        if (readiness === 'DEFICIT') {
+          this.db.exec('COMMIT');
+          throw new LiquidityDeficitError('Operator inventory is in deficit');
+        }
+        if (readiness === 'UNKNOWN' || readiness === 'DEGRADED') {
+          this.db.exec('COMMIT');
+          throw new EvmInventoryUnavailableError(`Operator inventory state is ${readiness}`);
+        }
+        if (readiness !== 'READY') {
+          this.db.exec('COMMIT');
+          throw new InventoryNotReadyError(`Operator inventory readiness state is ${readiness}`);
+        }
+
+        const safeWalletCapacity = BigInt(snapshotRow.safe_wallet_capacity as string);
+
+        const reservedRows = this.db
+          .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+          .all(token, 'RESERVED') as { amount_units: string }[];
+        let activeReserved = 0n;
+        for (const r of reservedRows) {
+          activeReserved += BigInt(r.amount_units);
+        }
+
+        const unresolvedP = this.getUnresolvedFundingIntentsAmountInternal(token);
+
+        // SAFE HEADROOM = W_safe - R - P
+        // CRITICAL (REC-1): Committed HTLCs (C) are NOT subtracted from safe wallet capacity!
+        available = safeWalletCapacity - activeReserved - unresolvedP;
+
+        if (available < 0n) {
+          this.db
+            .prepare('UPDATE chain_inventory_snapshots SET readiness_state = ?, updated_at = ? WHERE token_address = ?')
+            .run('DEFICIT', new Date().toISOString(), token);
+          this.db.exec('COMMIT');
+          throw new LiquidityDeficitError(
+            `LIQUIDITY_DEFICIT: Safe wallet capacity ${safeWalletCapacity} < obligations ${activeReserved + unresolvedP}`
+          );
+        }
+      } else {
+        // Fallback for legacy DB/tests without chain snapshot
+        const confirmedRow = this.db
+          .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
+          .get(token) as { confirmed_balance: string } | undefined;
+        const confirmed = confirmedRow ? BigInt(confirmedRow.confirmed_balance) : 0n;
+
+        const reservedRows = this.db
+          .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+          .all(token, 'RESERVED') as { amount_units: string }[];
+        let activeReserved = 0n;
+        for (const r of reservedRows) {
+          activeReserved += BigInt(r.amount_units);
+        }
+
+        const committedRows = this.db
+          .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+          .all(token, 'COMMITTED') as { amount_units: string }[];
+        let committed = 0n;
+        for (const r of committedRows) {
+          committed += BigInt(r.amount_units);
+        }
+
+        available = confirmed - activeReserved - committed;
       }
-
-      const committedRows = this.db
-        .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
-        .all(token, 'COMMITTED') as { amount_units: string }[];
-      let committed = 0n;
-      for (const r of committedRows) {
-        committed += BigInt(r.amount_units);
-      }
-
-      const available = confirmed - activeReserved - committed;
 
       if (available < amountUnits) {
         this.db.exec('COMMIT');
@@ -2142,6 +2267,147 @@ export class SqlitePersistence {
         .all() as Record<string, unknown>[];
     }
     return rows.map((r) => this.mapRowToLiquidityReservation(r));
+  }
+
+  public settleLiquidityReservation(reservationId: string): void {
+    this.beginImmediateWithRetry();
+    try {
+      const row = this.db
+        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+        .get(reservationId) as { status: string } | undefined;
+      if (row && (row.status === 'COMMITTED' || row.status === 'RESERVED')) {
+        const now = new Date().toISOString();
+        this.db
+          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
+          .run('SETTLED', now, reservationId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public recordChainInventorySnapshot(snapshot: ChainInventorySnapshot): void {
+    const token = snapshot.tokenAddress.toLowerCase();
+    const now = new Date().toISOString();
+    const observedAt = snapshot.observedAt.toISOString();
+    const stmt = this.db.prepare(`
+      INSERT INTO chain_inventory_snapshots (
+        token_address, chain_id, operator_address, wallet_balance_latest,
+        wallet_balance_finalized, safe_wallet_capacity, latest_block_number,
+        finalized_block_number, block_hash, readiness_state, observed_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(token_address) DO UPDATE SET
+        chain_id = excluded.chain_id,
+        operator_address = excluded.operator_address,
+        wallet_balance_latest = excluded.wallet_balance_latest,
+        wallet_balance_finalized = excluded.wallet_balance_finalized,
+        safe_wallet_capacity = excluded.safe_wallet_capacity,
+        latest_block_number = excluded.latest_block_number,
+        finalized_block_number = excluded.finalized_block_number,
+        block_hash = excluded.block_hash,
+        readiness_state = excluded.readiness_state,
+        observed_at = excluded.observed_at,
+        updated_at = excluded.updated_at
+    `);
+    stmt.run(
+      token,
+      snapshot.chainId,
+      snapshot.operatorAddress.toLowerCase(),
+      snapshot.walletBalanceLatest.toString(),
+      snapshot.walletBalanceFinalized.toString(),
+      snapshot.safeWalletCapacity.toString(),
+      snapshot.latestBlockNumber,
+      snapshot.finalizedBlockNumber,
+      snapshot.blockHash ?? null,
+      snapshot.readinessState,
+      observedAt,
+      now
+    );
+  }
+
+  public getLatestChainInventorySnapshot(tokenAddress: string): ChainInventorySnapshot | null {
+    const token = tokenAddress.toLowerCase();
+    const row = this.db
+      .prepare('SELECT * FROM chain_inventory_snapshots WHERE token_address = ?')
+      .get(token) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      tokenAddress: row.token_address as string,
+      chainId: Number(row.chain_id),
+      operatorAddress: row.operator_address as string,
+      walletBalanceLatest: BigInt(row.wallet_balance_latest as string),
+      walletBalanceFinalized: BigInt(row.wallet_balance_finalized as string),
+      safeWalletCapacity: BigInt(row.safe_wallet_capacity as string),
+      latestBlockNumber: Number(row.latest_block_number),
+      finalizedBlockNumber: Number(row.finalized_block_number),
+      blockHash: row.block_hash ? (row.block_hash as string) : undefined,
+      readinessState: row.readiness_state as InventoryReadinessState,
+      observedAt: new Date(row.observed_at as string),
+      updatedAt: new Date(row.updated_at as string),
+    };
+  }
+
+  public setInventoryReadinessState(tokenAddress: string, state: InventoryReadinessState, _reason?: string): void {
+    const token = tokenAddress.toLowerCase();
+    const now = new Date().toISOString();
+    const existing = this.db
+      .prepare('SELECT * FROM chain_inventory_snapshots WHERE token_address = ?')
+      .get(token) as Record<string, unknown> | undefined;
+    if (existing) {
+      this.db
+        .prepare('UPDATE chain_inventory_snapshots SET readiness_state = ?, updated_at = ? WHERE token_address = ?')
+        .run(state, now, token);
+    } else {
+      this.recordChainInventorySnapshot({
+        tokenAddress: token,
+        chainId: 84532,
+        operatorAddress: '0x0000000000000000000000000000000000000000',
+        walletBalanceLatest: 0n,
+        walletBalanceFinalized: 0n,
+        safeWalletCapacity: 0n,
+        latestBlockNumber: 0,
+        finalizedBlockNumber: 0,
+        readinessState: state,
+        observedAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+  }
+
+  public getInventoryReadinessState(tokenAddress: string): InventoryReadinessState {
+    const snapshot = this.getLatestChainInventorySnapshot(tokenAddress);
+    if (!snapshot) {
+      const legacy = this.db
+        .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
+        .get(tokenAddress.toLowerCase()) as { confirmed_balance: string } | undefined;
+      if (legacy && BigInt(legacy.confirmed_balance) > 0n) {
+        return 'READY';
+      }
+      return 'NOT_READY';
+    }
+    return snapshot.readinessState;
+  }
+
+  public listSovereignSwapsWithEvmBindings(): Array<{ id: string; evmSwapKey: string; evmHtlcId: string }> {
+    const rows = this.db
+      .prepare('SELECT id, evm_swap_key, evm_htlc_id FROM sovereign_swaps WHERE evm_swap_key IS NOT NULL AND evm_htlc_id IS NOT NULL')
+      .all() as { id: string; evm_swap_key: string; evm_htlc_id: string }[];
+    return rows.map((r) => ({
+      id: r.id,
+      evmSwapKey: r.evm_swap_key,
+      evmHtlcId: r.evm_htlc_id,
+    }));
+  }
+
+  public getSovereignSwapBySwapKey(swapKey: string): SovereignExecutionRecord | null {
+    const stmt = this.db.prepare('SELECT * FROM sovereign_swaps WHERE evm_swap_key = ?');
+    const row = stmt.get(swapKey) as Record<string, unknown> | undefined;
+    return row ? this.mapRowToSovereignRecord(row) : null;
   }
 
   private mapRowToLiquidityReservation(row: Record<string, unknown>): LiquidityReservationRecord {

@@ -1,17 +1,18 @@
 # SovRoute — Canonical Project State
 
 ```
-Status: ACTIVE DEVELOPMENT
+Status: ACTIVE DEVELOPMENT (CANDIDATE APPLICATION BASELINE IMPLEMENTED)
 Canonical Document: YES (Living Project Memory & Master State)
-Last Verified: 2026-09-05T15:45:00+03:00
-Last Updated: 2026-09-05T15:45:00+03:00
+Last Verified: 2026-09-05T16:15:00+03:00
+Last Updated: 2026-09-05T16:15:00+03:00
 Canonical Domain: https://sovroute.com
 Historical Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
 Canonical SovRoute Application Baseline (Post-Liquidity): 906e5d1720ccd00b89a3f00778c1c302d4fe1da9
-Repository HEAD: Advances via documentation-only commits
-Current Phase: Stage 2 Complete (Brand & Repository Alignment to SovRoute) / Stage 3 Base Inventory Audit
-Current Blocker: Bitcoin Core Initial Block Download (IBD) in Progress
-Next Safe Action: Stage 3 Base USDC Inventory Reconciliation Audit; allow IBD to finish uninterrupted
+Candidate Application Baseline Branch: phase-base-inventory-reconciliation-implementation
+Repository HEAD: Candidate implementation on dedicated branch
+Current Phase: Base USDC Inventory Reconciliation & Startup Safety Complete (Candidate Application Baseline)
+Current Blocker: Independent review & explicit owner approval before merge; Bitcoin Core IBD in Progress
+Next Safe Action: Independent review of candidate baseline; allow Bitcoin Core IBD to finish uninterrupted
 Production Funds: ZERO (0 real BTC, 0 USDC, 0 Base mainnet transactions)
 ```
 
@@ -672,5 +673,44 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
   - `npm test`: 180 passed, 14 suites, 0 failures.
 - **Result**: **PASS — STAGE 2 SOVROUTE BRAND & REPO TRANSITION COMPLETE**.
 
+### 2026-09-05 16:15 +03:00 (Base USDC Inventory Reconciliation & Startup Safety — Candidate Application Baseline)
+- **Session Objective**: Resolve the critical production-readiness gap identified in the Base USDC Inventory Reconciliation Audit where SQLite `operator_inventory.confirmed_balance` was not derived from on-chain Base USDC reality, eliminate the Double-Counting Trap, implement a 5-phase Reconcile-on-Boot gate, persist durable swap-HTLC bindings, and certify with adversarial and multi-process suites.
+- **Root Cause & Accounting Fixes**:
+  - **Double-Counting Trap Eliminated (REC-1)**: `HtlcErc20.sol` debits USDC tokens via `transferFrom` at the time of onchain funding. Onchain wallet balance $W_{\text{onchain}}$ already excludes committed escrows ($C$). Thus, Safe Headroom is:
+    $$\text{Headroom} = W_{\text{safe}} - R - P$$
+    where $W_{\text{safe}} = \min(W_{\text{latest}}, W_{\text{finalized}})$, active `RESERVED` obligations ($R$) and unresolved funding intents ($P$) are subtracted exactly once, and committed HTLCs ($C$) are never subtracted from $W_{\text{safe}}$.
+  - **Asymmetric Deposit Finality (REC-7, REC-8)**: Unfinalized deposits are not spendable, while withdrawals and chain reorganizations reduce spendable headroom immediately.
+  - **Durable Swap-HTLC Identity (REC-14)**: Added `htlc_id` column to `sovereign_swaps`; rehydrates in-memory maps at startup; falls back to SQLite durable query.
+- **Implementation Changes**:
+  - `src/atomic/types.ts`: Added `InventoryReadinessState`, `InventoryNotReadyError`, `LiquidityDeficitError`, `EvmInventoryUnavailableError`, `ChainCapacityObservation`, `ChainInventorySnapshot`, `BaseInventoryReconciliationPolicy`, `DEFAULT_INVENTORY_RECONCILIATION_POLICY`, `IChainCapacityProvider`, and extended `ILiquidityInventory`.
+  - `src/persistence/sqlite.ts`: Added `chain_inventory_snapshots` table with index on `token_address, observed_at`; additive migration `ALTER TABLE sovereign_swaps ADD COLUMN htlc_id TEXT`; implemented atomic SQLite methods under `BEGIN IMMEDIATE`: `recordChainInventorySnapshot`, `getLatestChainInventorySnapshot`, `setInventoryReadinessState`, `getInventoryReadinessState`, `getSafeHeadroom`, `getUnresolvedFundingIntentsAmount`, `settleLiquidityReservation`, `listSovereignSwapsWithEvmBindings`, and `getSovereignSwapBySwapKey`.
+  - `src/atomic/evm/base-sepolia-backend.ts` & `src/atomic/evm/fake-backend.ts`: Implemented `IChainCapacityProvider`, asymmetric finality observation, `rehydrateBindings()`, and durable fallback in `observeHtlc`.
+  - `src/atomic/liquidity/chain-reconciler.ts`: Built 5-phase `ChainInventoryReconciler` (`reconcileOnBoot`, `reconcile`, `getSafeHeadroom`).
+  - `src/atomic/liquidity/sqlite-inventory.ts`: Upgraded with reconciler integration, safe headroom enforcement under `BEGIN IMMEDIATE`, and readiness checks.
+  - `src/atomic/coordinator/coordinator.ts`: Added fail-closed readiness gate in `prepareSwap` (rejects unless state is `READY`).
+  - `src/bootstrap.ts`: Added Step 6.5 invoking `reconcileOnBoot` and asserting `READY`.
+- **Invariants & Specification**:
+  - `SECURITY_MODEL_V1.md`: Added Section 30 with 20 formal reconciliation invariants (`REC-1` through `REC-20`), preserving `SEC-1` through `SEC-25` and `LIQ-1` through `LIQ-15`.
+  - `ARCHITECTURE_V4_SOVEREIGN_CORE.md`: Added Section 38 detailing onchain inventory reconciliation, safe headroom formula, 5-phase boot gate, and external treasury decoupling.
+  - `docs/BASE-USDC-INVENTORY-RECONCILIATION-AUDIT.md`: Reclassified numeric examples as configurable policies linked to `EvmFinalityPolicy`.
+- **Adversarial & Cross-Process Certification**:
+  - Created `tests/inventory-reconciliation-safety.test.ts`: 40 adversarial scenarios covering all 20 REC invariants (40/40 passing).
+  - Created `tests/inventory-cross-process.test.ts` & `tests/helpers/inventory-reconciliation-worker.ts`: True OS child process concurrency certification (5 genuine child processes; 100 USDC pool; 30 USDC requests -> exactly 3 succeed, 2 fail closed; simulated wallet drop to 70 USDC triggers DEFICIT and halts all reservations).
+  - Full test suite (`npm test`): 222 passed, 32 suites, 0 failures (100% pass).
+  - `npm run coordinator:test`: 51 passed, 0 failures.
+  - `npm run phase6:test`: 130 passed, 0 failures.
+  - `npm run typecheck`: 0 errors.
+  - `python tests/scan-secrets.py`: Clean (0 secrets).
+- **Candidate Baseline Status**:
+  - Candidate Branch: `phase-base-inventory-reconciliation-implementation`.
+  - Canonical Application Baseline: Remains `906e5d1720ccd00b89a3f00778c1c302d4fe1da9`.
+  - Dedicated candidate branch will NOT be merged without explicit owner approval.
+  - Production server (`aliasdesk-server`): ZERO mutation (untouched).
+  - Bitcoin Core: Running IBD uninterrupted; no restart, no shutdown.
+  - AIPP: All 5 containers undisturbed with `Restarts=0`.
+  - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
+- **Result**: **PASS — BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY CANDIDATE BASELINE CERTIFIED**.
+
 ---
 *End of Canonical Master Project State Document.*
+

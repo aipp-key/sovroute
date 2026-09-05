@@ -103,6 +103,7 @@ export interface EvmHtlcParams {
 
 export interface EvmHtlcState {
   swapKey: string;
+  htlcId?: string | undefined;
   funded: boolean;
   completed: boolean;
   refunded: boolean;
@@ -161,6 +162,90 @@ export const LiquidityReservationStatus = {
 export type LiquidityReservationStatus =
   (typeof LiquidityReservationStatus)[keyof typeof LiquidityReservationStatus];
 
+export const InventoryReadinessState = {
+  NOT_READY: 'NOT_READY',
+  RECONCILING: 'RECONCILING',
+  READY: 'READY',
+  DEFICIT: 'DEFICIT',
+  UNKNOWN: 'UNKNOWN',
+  DEGRADED: 'DEGRADED',
+} as const;
+
+export type InventoryReadinessState =
+  (typeof InventoryReadinessState)[keyof typeof InventoryReadinessState];
+
+export class InventoryNotReadyError extends Error {
+  public readonly code = 'INVENTORY_NOT_READY';
+  constructor(message: string = 'Operator inventory is not ready for swap quotation or reservation') {
+    super(`INVENTORY_NOT_READY: ${message}`);
+    this.name = 'InventoryNotReadyError';
+  }
+}
+
+export class LiquidityDeficitError extends Error {
+  public readonly code = 'LIQUIDITY_DEFICIT';
+  constructor(message: string = 'Operator inventory is in deficit: safe wallet capacity is less than obligations') {
+    super(`LIQUIDITY_DEFICIT: ${message}`);
+    this.name = 'LiquidityDeficitError';
+  }
+}
+
+export class EvmInventoryUnavailableError extends Error {
+  public readonly code = 'EVM_INVENTORY_UNAVAILABLE';
+  constructor(message: string = 'Base RPC or EVM inventory state is unavailable, degraded, or stale') {
+    super(`EVM_INVENTORY_UNAVAILABLE: ${message}`);
+    this.name = 'EvmInventoryUnavailableError';
+  }
+}
+
+export interface ChainCapacityObservation {
+  tokenAddress: string;
+  chainId: number;
+  operatorAddress: string;
+  walletBalanceLatest: bigint;
+  walletBalanceFinalized: bigint;
+  safeWalletCapacity: bigint;
+  latestBlockNumber: number;
+  finalizedBlockNumber: number;
+  blockHash?: string | undefined;
+  observedAt: Date;
+}
+
+export interface ChainInventorySnapshot {
+  tokenAddress: string;
+  chainId: number;
+  operatorAddress: string;
+  walletBalanceLatest: bigint;
+  walletBalanceFinalized: bigint;
+  safeWalletCapacity: bigint;
+  latestBlockNumber: number;
+  finalizedBlockNumber: number;
+  blockHash?: string | undefined;
+  readinessState: InventoryReadinessState;
+  observedAt: Date;
+  updatedAt: Date;
+}
+
+export interface BaseInventoryReconciliationPolicy {
+  maxFreshnessMs: number;
+  requiredConfirmations: number;
+  reorgLagTolerance: number;
+  failClosedOnDeficit: boolean;
+}
+
+export const DEFAULT_INVENTORY_RECONCILIATION_POLICY: BaseInventoryReconciliationPolicy = {
+  maxFreshnessMs: 60_000, // 60 seconds
+  requiredConfirmations: 2, // Matches Base Sepolia test policy
+  reorgLagTolerance: 3,
+  failClosedOnDeficit: true,
+};
+
+export interface IChainCapacityProvider {
+  observeWalletCapacity(tokenAddress: string): Promise<ChainCapacityObservation>;
+  verifyChainAndToken(expectedChainId: number, tokenAddress: string): Promise<{ valid: boolean; reason?: string }>;
+  getContractHtlcState?(htlcId: string): Promise<any>;
+}
+
 export interface ILiquidityInventory {
   reserve(
     amountUnits: bigint,
@@ -175,6 +260,14 @@ export interface ILiquidityInventory {
   getAvailableBalance(tokenAddress: string): Promise<bigint>;
 
   restoreRefund?(reservationId: string): Promise<void>;
+
+  getConfirmedBalance?(tokenAddress: string): Promise<bigint>;
+  getReservedBalance?(tokenAddress: string): Promise<bigint>;
+  getCommittedBalance?(tokenAddress: string): Promise<bigint>;
+  getReadinessState?(tokenAddress?: string): Promise<InventoryReadinessState>;
+  getSafeHeadroom?(tokenAddress: string): Promise<bigint>;
+  reconcile?(tokenAddress?: string): Promise<void>;
+  reconcileOnBoot?(tokenAddress?: string): Promise<void>;
 }
 
 export const SovereignAtomicState = {

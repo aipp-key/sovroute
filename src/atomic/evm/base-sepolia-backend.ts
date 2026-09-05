@@ -36,6 +36,8 @@ import type {
   EvmHtlcParams,
   EvmHtlcState,
   SecretPreimage,
+  ChainCapacityObservation,
+  IChainCapacityProvider,
 } from '../types.ts';
 import {
   BaseNetworkGuard,
@@ -83,7 +85,7 @@ export interface BaseSepoliaBackendConfig {
   unsafeDirectExecutionForTests?: boolean;
 }
 
-export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
+export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapacityProvider {
   readonly backendName = 'BaseSepoliaAtomicBackend';
   readonly chainId = BASE_SEPOLIA_CHAIN_ID;
   public readonly finalityPolicy = {
@@ -96,6 +98,7 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
   private operatorAddress: `0x${string}` | undefined;
   private transactionManager: BaseTransactionManager | undefined;
   private unsafeDirectExecutionForTests: boolean = false;
+  private persistence: SqlitePersistence | undefined;
 
   private htlcAddress: `0x${string}`;
   private tokenAddress: `0x${string}`;
@@ -118,6 +121,7 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
   constructor(config: BaseSepoliaBackendConfig = {}) {
     const rootDir = process.cwd();
     const rpcUrl = config.rpcUrl ?? 'https://sepolia.base.org';
+    this.persistence = config.persistence;
 
     this.publicClient = createPublicClient({
       chain: baseSepolia,
@@ -168,6 +172,9 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
 
     this.tokenAddress = (config.tokenAddress ?? OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS) as `0x${string}`;
     this.htlcAddress = (config.htlcAddress ?? '0x0000000000000000000000000000000000000000') as `0x${string}`;
+
+    // Rehydrate durable bindings from persistence if available
+    this.rehydrateBindings();
   }
 
   public getTransactionManager(): BaseTransactionManager | undefined {
@@ -176,6 +183,138 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
 
   public isUnsafeDirectExecutionEnabled(): boolean {
     return this.unsafeDirectExecutionForTests;
+  }
+
+  public rehydrateBindings(): number {
+    if (!this.persistence) return 0;
+    try {
+      const bindings = this.persistence.listSovereignSwapsWithEvmBindings();
+      let count = 0;
+      for (const b of bindings) {
+        this.swapKeyToHtlcId.set(b.evmSwapKey, b.evmHtlcId as `0x${string}`);
+        this.htlcIdToSwapKey.set(b.evmHtlcId as `0x${string}`, b.evmSwapKey);
+        count++;
+      }
+      return count;
+    } catch {
+      return 0;
+    }
+  }
+
+  public async observeWalletCapacity(tokenAddress: string): Promise<ChainCapacityObservation> {
+    await this.ensureGuards();
+    const token = tokenAddress.toLowerCase() as `0x${string}`;
+    const operator = this.operatorAddress;
+    if (!operator) {
+      throw new Error('NO_OPERATOR_ADDRESS: Operator wallet is not configured');
+    }
+
+    const latestBlock = await this.publicClient.getBlockNumber();
+    const latestBlockNumber = Number(latestBlock);
+
+    // 1. Observe latest balance
+    const walletBalanceLatest = (await this.publicClient.readContract({
+      address: token,
+      abi: this.tokenAbi,
+      functionName: 'balanceOf',
+      args: [operator],
+      blockTag: 'latest',
+    })) as bigint;
+
+    // 2. Observe finalized / safe balance
+    const finalizedBlockNumber = Math.max(0, latestBlockNumber - this.requiredConfirmations);
+    let walletBalanceFinalized = walletBalanceLatest;
+
+    try {
+      walletBalanceFinalized = (await this.publicClient.readContract({
+        address: token,
+        abi: this.tokenAbi,
+        functionName: 'balanceOf',
+        args: [operator],
+        blockTag: 'finalized',
+      })) as bigint;
+    } catch {
+      try {
+        walletBalanceFinalized = (await this.publicClient.readContract({
+          address: token,
+          abi: this.tokenAbi,
+          functionName: 'balanceOf',
+          args: [operator],
+          blockNumber: BigInt(finalizedBlockNumber),
+        })) as bigint;
+      } catch {
+        walletBalanceFinalized = walletBalanceLatest;
+      }
+    }
+
+    const safeWalletCapacity =
+      walletBalanceLatest < walletBalanceFinalized
+        ? walletBalanceLatest
+        : walletBalanceFinalized;
+
+    let blockHash: string | undefined;
+    try {
+      const block = await this.publicClient.getBlock({ blockNumber: latestBlock });
+      blockHash = block.hash;
+    } catch {}
+
+    return {
+      tokenAddress: token,
+      chainId: this.chainId,
+      operatorAddress: operator,
+      walletBalanceLatest,
+      walletBalanceFinalized,
+      safeWalletCapacity,
+      latestBlockNumber,
+      finalizedBlockNumber,
+      blockHash,
+      observedAt: new Date(),
+    };
+  }
+
+  public async verifyChainAndToken(
+    expectedChainId: number,
+    tokenAddress: string
+  ): Promise<{ valid: boolean; reason?: string }> {
+    try {
+      const chainId = await this.publicClient.getChainId();
+      if (chainId !== expectedChainId) {
+        return {
+          valid: false,
+          reason: `WRONG_CHAIN_ID: expected ${expectedChainId}, got ${chainId}`,
+        };
+      }
+
+      const token = tokenAddress.toLowerCase() as `0x${string}`;
+      const code = await this.publicClient.getCode({ address: token });
+      if (!code || code === '0x') {
+        return {
+          valid: false,
+          reason: `TOKEN_CONTRACT_NOT_FOUND: No bytecode at token address ${tokenAddress}`,
+        };
+      }
+
+      const decimals = await this.publicClient.readContract({
+        address: token,
+        abi: this.tokenAbi,
+        functionName: 'decimals',
+        args: [],
+      });
+
+      if (Number(decimals) !== 6) {
+        return {
+          valid: false,
+          reason: `INVALID_TOKEN_DECIMALS: Expected 6 decimals for canonical USDC, got ${decimals}`,
+        };
+      }
+
+      return { valid: true };
+    } catch (err: any) {
+      return {
+        valid: false,
+        reason: `CHAIN_TOKEN_VERIFICATION_FAILED: ${err.message}`,
+      };
+    }
   }
 
   /**
@@ -522,7 +661,16 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend {
   async observeHtlc(swapKey: string): Promise<EvmHtlcState> {
     await this.ensureGuards();
 
-    const htlcId = this.swapKeyToHtlcId.get(swapKey);
+    let htlcId = this.swapKeyToHtlcId.get(swapKey);
+    if (!htlcId && this.persistence) {
+      const swap = this.persistence.getSovereignSwapBySwapKey(swapKey);
+      if (swap && swap.evmHtlcId) {
+        htlcId = swap.evmHtlcId as `0x${string}`;
+        this.swapKeyToHtlcId.set(swapKey, htlcId);
+        this.htlcIdToSwapKey.set(htlcId, swapKey);
+      }
+    }
+
     if (!htlcId) {
       return {
         swapKey,

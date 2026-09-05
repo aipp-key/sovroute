@@ -33,7 +33,13 @@ import type {
   HashLock,
   SecretPreimage,
 } from '../types.ts';
-import { SovereignAtomicState, AuthorizedSettlementPreimage } from '../types.ts';
+import {
+  SovereignAtomicState,
+  AuthorizedSettlementPreimage,
+  InventoryNotReadyError,
+  LiquidityDeficitError,
+  EvmInventoryUnavailableError,
+} from '../types.ts';
 import {
   LightningSettlementGateError,
   type EvmHtlcClaimedEvidence,
@@ -317,6 +323,25 @@ export class AtomicCoordinator {
       const now = new Date();
 
       if (!recheck) {
+        if (typeof (this.inventory as any).getReadinessState === 'function') {
+          const readiness = await (this.inventory as any).getReadinessState(tokenAddress);
+          if (readiness !== 'READY') {
+            if (readiness === 'DEFICIT') {
+              throw new LiquidityDeficitError(
+                `Cannot prepare swap: operator liquidity is in DEFICIT for token ${tokenAddress}`
+              );
+            } else if (readiness === 'UNKNOWN' || readiness === 'DEGRADED') {
+              throw new EvmInventoryUnavailableError(
+                `Cannot prepare swap: EVM inventory state is ${readiness} for token ${tokenAddress}`
+              );
+            } else {
+              throw new InventoryNotReadyError(
+                `Cannot prepare swap: operator inventory is not ready (state: ${readiness})`
+              );
+            }
+          }
+        }
+
         // Reserve operator inventory before issuing hold invoice (USDC atomic units, NOT sats)
         const reservation = await this.inventory.reserve(
           params.expectedUsdcAmount,

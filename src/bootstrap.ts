@@ -169,6 +169,18 @@ export async function bootstrapProductionRouter(
   });
 
   // =========================================================================
+  // STEP 6.5: BASE ONCHAIN INVENTORY RECONCILIATION ON BOOT (REC-4, REC-5)
+  // =========================================================================
+  if (typeof (options.inventory as any).reconcileOnBoot === 'function') {
+    const bootResult = await (options.inventory as any).reconcileOnBoot();
+    if (bootResult.readinessState !== 'READY') {
+      throw new Error(
+        `INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is ${bootResult.readinessState}, expected READY`
+      );
+    }
+  }
+
+  // =========================================================================
   // STEP 7: WIRE ATOMIC COORDINATOR WITH VALIDATED POLICIES
   // =========================================================================
   const coordinator = new AtomicCoordinator(lightningBackend, evmBackend, options.inventory, {

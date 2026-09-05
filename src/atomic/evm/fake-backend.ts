@@ -14,6 +14,8 @@ import type {
   SecretPreimage,
   EvmHtlcClaimedEvidence,
   EvmHtlcRefundedEvidence,
+  ChainCapacityObservation,
+  IChainCapacityProvider,
 } from '../types.ts';
 
 interface StoredHtlc {
@@ -26,7 +28,7 @@ interface StoredHtlc {
   fundingBlockNumber: number;
 }
 
-export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
+export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityProvider {
   readonly backendName = 'FakeEvmAtomicBackend';
   readonly chainId = 42161; // Arbitrum One / Base Sepolia test mock
   public finalityPolicy?: { policyTag: string; requiredConfirmations: number } | undefined = {
@@ -39,6 +41,91 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
   private claimPreimages = new Map<string, string>();
   private txReceipts = new Map<string, { status: 'success' | 'pending' | 'reverted'; blockNumber: number; txHash: string; swapKey: string; isClaim: boolean }>();
   private storageDisagreements = new Map<string, { forceStatus?: number }>();
+
+  private mockBalances = new Map<string, { latest: bigint; finalized: bigint }>();
+  private defaultOperatorAddress = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+  private swapKeyToHtlcId = new Map<string, string>();
+  private htlcIdToSwapKey = new Map<string, string>();
+  private persistence?: any;
+  private chainValid = true;
+  private tokenValid = true;
+  private verificationFailureReason?: string | undefined;
+
+  public setWalletBalance(tokenAddress: string, latest: bigint, finalized?: bigint): void {
+    const token = tokenAddress.toLowerCase();
+    this.mockBalances.set(token, {
+      latest,
+      finalized: finalized !== undefined ? finalized : latest,
+    });
+  }
+
+  public setChainValidationResult(valid: boolean, reason?: string): void {
+    this.chainValid = valid;
+    this.verificationFailureReason = reason;
+  }
+
+  public setTokenValidationResult(valid: boolean, reason?: string): void {
+    this.tokenValid = valid;
+    this.verificationFailureReason = reason;
+  }
+
+  public setPersistence(persistence: any): void {
+    this.persistence = persistence;
+  }
+
+  public rehydrateBindings(): number {
+    if (!this.persistence) return 0;
+    try {
+      const bindings = this.persistence.listSovereignSwapsWithEvmBindings();
+      let count = 0;
+      for (const b of bindings) {
+        this.swapKeyToHtlcId.set(b.evmSwapKey, b.evmHtlcId);
+        this.htlcIdToSwapKey.set(b.evmHtlcId, b.evmSwapKey);
+        count++;
+      }
+      return count;
+    } catch {
+      return 0;
+    }
+  }
+
+  public async observeWalletCapacity(tokenAddress: string): Promise<ChainCapacityObservation> {
+    const token = tokenAddress.toLowerCase();
+    const bal = this.mockBalances.get(token) ?? { latest: 0n, finalized: 0n };
+    const safeWalletCapacity = bal.latest < bal.finalized ? bal.latest : bal.finalized;
+
+    return {
+      tokenAddress: token,
+      chainId: this.chainId,
+      operatorAddress: this.defaultOperatorAddress,
+      walletBalanceLatest: bal.latest,
+      walletBalanceFinalized: bal.finalized,
+      safeWalletCapacity,
+      latestBlockNumber: this.currentBlockNumber,
+      finalizedBlockNumber: Math.max(0, this.currentBlockNumber - (this.finalityPolicy?.requiredConfirmations ?? 2)),
+      blockHash: `0x_mock_block_hash_${this.currentBlockNumber}`,
+      observedAt: new Date(),
+    };
+  }
+
+  public async verifyChainAndToken(
+    expectedChainId: number,
+    tokenAddress: string
+  ): Promise<{ valid: boolean; reason?: string }> {
+    if (!this.chainValid || (expectedChainId && expectedChainId !== this.chainId)) {
+      return {
+        valid: false,
+        reason: this.verificationFailureReason ?? `WRONG_CHAIN_ID: expected ${expectedChainId}, got ${this.chainId}`,
+      };
+    }
+    if (!this.tokenValid) {
+      return {
+        valid: false,
+        reason: this.verificationFailureReason ?? `INVALID_TOKEN: Token ${tokenAddress} failed validation`,
+      };
+    }
+    return { valid: true };
+  }
 
   async fundHtlc(
     params: EvmHtlcParams
@@ -66,10 +153,35 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
   }
 
   async observeHtlc(swapKey: string): Promise<EvmHtlcState> {
-    const htlc = this.htlcs.get(swapKey);
+    let htlc = this.htlcs.get(swapKey);
+    if (!htlc && this.persistence) {
+      const swap = this.persistence.getSovereignSwapBySwapKey(swapKey);
+      if (swap && swap.evmSwapKey) {
+        const funded =
+          swap.state !== 'PLAN_PREPARED' &&
+          swap.state !== 'INVOICE_CREATED' &&
+          swap.state !== 'LIGHTNING_HELD';
+        const completed =
+          swap.state === 'COMPLETED' || swap.state === 'EVM_CLAIM_CONFIRMED';
+        const refunded = swap.state === 'REFUNDED';
+        const htlcId = swap.evmHtlcId ?? this.swapKeyToHtlcId.get(swapKey);
+        return {
+          swapKey,
+          htlcId,
+          funded,
+          completed,
+          refunded,
+          balance: funded && !completed && !refunded ? swap.expectedUsdcAmount : 0n,
+          timelock: swap.refundLocktime ?? 0,
+          blockTimestamp: this.currentBlockTimestamp,
+        };
+      }
+    }
     if (!htlc) {
+      const fallbackHtlcId = this.swapKeyToHtlcId.get(swapKey);
       return {
         swapKey,
+        htlcId: fallbackHtlcId,
         funded: false,
         completed: false,
         refunded: false,
@@ -79,8 +191,12 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend {
       };
     }
 
+    const htlcId =
+      this.swapKeyToHtlcId.get(swapKey) ??
+      `0x${createHash('sha256').update(swapKey).digest('hex')}`;
     return {
       swapKey,
+      htlcId,
       funded: htlc.funded,
       completed: htlc.completed,
       refunded: htlc.refunded,
