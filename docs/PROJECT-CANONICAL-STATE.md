@@ -3,13 +3,14 @@
 ```
 Status: ACTIVE DEVELOPMENT
 Canonical Document: YES (Living Project Memory & Master State)
-Last Verified: 2026-09-05T14:25:00+03:00
-Last Updated: 2026-09-05T14:25:00+03:00
-Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
+Last Verified: 2026-09-05T15:30:00+03:00
+Last Updated: 2026-09-05T15:30:00+03:00
+Historical Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
+Canonical SovRoute Application Baseline (Post-Liquidity): 906e5d1720ccd00b89a3f00778c1c302d4fe1da9
 Repository HEAD: Advances via documentation-only commits
-Current Phase: Liquidity Accounting & Durable Reservation Safety (phase-liquidity-accounting-safety) / Waiting for Phase 2D Eligibility
+Current Phase: Stage 1 Canonical Integration Complete / Advancing to Stage 2 Brand Alignment
 Current Blocker: Bitcoin Core Initial Block Download (IBD) in Progress
-Next Safe Action: Complete liquidity safety branch push; allow IBD to finish uninterrupted for Phase 2D Certification Gate
+Next Safe Action: Stage 2 GitHub repository rename to aipp-key/sovroute; allow IBD to finish uninterrupted
 Production Funds: ZERO (0 real BTC, 0 USDC, 0 Base mainnet transactions)
 ```
 
@@ -628,6 +629,29 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
   - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
 - **Branch Boundary**: Dedicated branch `phase-liquidity-accounting-safety` created; NOT merged to `phase-7-production-readiness-closure`.
 - **Result**: **PASS — BASE USDC INVENTORY ACCOUNTING FULLY DURABLE & UNIT-SAFE**.
+
+### 2026-09-05 15:30 +03:00 (Stage 1 — Canonical Integration & New Application Baseline Establishment)
+- **Session Objective**: Integrate certified `phase-liquidity-accounting-safety` branch into the canonical development branch `phase-7-production-readiness-closure` and establish the new canonical application/source baseline.
+- **Branch Ancestry & Integration**:
+  - Ancestry verified: `phase-7-production-readiness-closure` (`5196968017cd78ef4ef35c8c3c2c105de2a794e2`) was confirmed direct ancestor of `phase-liquidity-accounting-safety` (`906e5d1720ccd00b89a3f00778c1c302d4fe1da9`).
+  - Merged via fast-forward: `git merge --ff-only phase-liquidity-accounting-safety`.
+  - Commit graph preserved cleanly with zero merge commits or history rewrite.
+- **Baseline Establishment**:
+  - Historical Frozen Application Baseline: `357c5ab85344a2fa5602a5e376efc7ea80685498` (preserved as historical milestone).
+  - New Canonical Application/Source Baseline: `906e5d1720ccd00b89a3f00778c1c302d4fe1da9`.
+  - Liquidity Safety Phase: **CLOSED / FULL PASS**.
+  - Cross-Process Concurrency Certification: **PASS (180/180 unit tests across 14 suites, 4/4 cross-process tests)**.
+- **Verification Results on Canonical Branch**:
+  - `npm run typecheck`: 0 errors (clean).
+  - `python tests/scan-secrets.py`: Clean (0 secrets).
+  - `npm test`: 180 passed, 14 suites, 0 failures (100% pass).
+  - `node --test tests/liquidity-cross-process.test.ts`: 4 passed, 0 failures.
+- **Production Server & Real Funds Boundary**:
+  - Production server (`aliasdesk-server`): ZERO mutation (untouched).
+  - Bitcoin Core: Running IBD uninterrupted; no restart, no shutdown.
+  - AIPP: All 5 containers undisturbed with `Restarts=0`.
+  - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
+- **Result**: **PASS — CANONICAL INTEGRATION COMPLETE & NEW BASELINE ESTABLISHED**.
 
 ---
 *End of Canonical Master Project State Document.*
