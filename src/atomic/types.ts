@@ -152,10 +152,20 @@ export interface IEvmAtomicBackend {
   getBlockTimestamp(): Promise<number>;
 }
 
+export const LiquidityReservationStatus = {
+  RESERVED: 'RESERVED',
+  COMMITTED: 'COMMITTED',
+  RELEASED: 'RELEASED',
+} as const;
+
+export type LiquidityReservationStatus =
+  (typeof LiquidityReservationStatus)[keyof typeof LiquidityReservationStatus];
+
 export interface ILiquidityInventory {
   reserve(
     amountUnits: bigint,
-    tokenAddress: string
+    tokenAddress: string,
+    executionId?: string
   ): Promise<{ reservationId: string; reserved: boolean }>;
 
   release(reservationId: string): Promise<void>;
@@ -163,6 +173,8 @@ export interface ILiquidityInventory {
   commit(reservationId: string): Promise<void>;
 
   getAvailableBalance(tokenAddress: string): Promise<bigint>;
+
+  restoreRefund?(reservationId: string): Promise<void>;
 }
 
 export const SovereignAtomicState = {
@@ -202,6 +214,9 @@ export interface SovereignExecutionRecord {
   amountSats: bigint;
   expectedUsdcAmount: bigint;
   state: SovereignAtomicState;
+  reservationId?: string | undefined;
+  reservedAmountUnits?: bigint | undefined;
+  reservationStatus?: LiquidityReservationStatus | undefined;
   holdInvoice?: HoldInvoice | undefined;
   evmSwapKey?: string | undefined;
   evmHtlcId?: string | undefined;

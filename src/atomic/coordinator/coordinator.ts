@@ -254,6 +254,16 @@ export class AtomicCoordinator {
       throw new Error(`Invalid hashLock format: must be 0x-prefixed 32-byte hex`);
     }
 
+    if (params.amountSats <= 0n) {
+      throw new Error(`Invalid amountSats: [${params.amountSats.toString()}]. Must be positive integer sats.`);
+    }
+
+    if (params.expectedUsdcAmount <= 0n) {
+      throw new Error(
+        `Invalid expectedUsdcAmount: [${params.expectedUsdcAmount.toString()}]. Must be positive integer USDC atomic units.`
+      );
+    }
+
     const tokenAddress = this.defaultTokenAddress;
     const refundAddress = this.defaultRefundAddress;
     const paymentHash = params.hashLock.replace(/^0x/, '').toLowerCase();
@@ -307,8 +317,12 @@ export class AtomicCoordinator {
       const now = new Date();
 
       if (!recheck) {
-        // Reserve operator inventory before issuing hold invoice
-        const reservation = await this.inventory.reserve(params.amountSats, tokenAddress);
+        // Reserve operator inventory before issuing hold invoice (USDC atomic units, NOT sats)
+        const reservation = await this.inventory.reserve(
+          params.expectedUsdcAmount,
+          tokenAddress,
+          executionId
+        );
         if (!reservation.reserved) {
           throw new Error(`Insufficient operator liquidity to facilitate atomic swap`);
         }
@@ -322,6 +336,9 @@ export class AtomicCoordinator {
           amountSats: params.amountSats,
           expectedUsdcAmount: params.expectedUsdcAmount,
           state: SovereignAtomicState.PLAN_PREPARED,
+          reservationId: reservation.reservationId,
+          reservedAmountUnits: params.expectedUsdcAmount,
+          reservationStatus: 'RESERVED',
           tokenAddress,
           refundAddress,
           cltvExpiryBlocks: cltv,
@@ -347,14 +364,24 @@ export class AtomicCoordinator {
         );
       } catch (err: any) {
         // Ambiguity check: did LND actually create the invoice?
+        let observed: HoldInvoice | null = null;
         try {
-          const observed = await this.lightning.observeHoldInvoice(paymentHash);
-          if (observed && observed.paymentHash.toLowerCase() === paymentHash) {
-            holdInvoice = observed;
-          } else {
-            throw err;
-          }
+          observed = await this.lightning.observeHoldInvoice(paymentHash);
         } catch {
+          // LND observation failed
+        }
+
+        if (observed && observed.paymentHash.toLowerCase() === paymentHash) {
+          holdInvoice = observed;
+        } else {
+          // Definitive failure or confirmed no invoice created:
+          // Release the reserved liquidity exactly once
+          const currentRec = recheck ?? this.persistence.getSovereignSwap(executionId);
+          const resId = currentRec?.reservationId;
+          if (resId && currentRec?.reservationStatus === 'RESERVED') {
+            await this.inventory.release(resId);
+            this.updateRecord(executionId, { reservationStatus: 'RELEASED' });
+          }
           throw err;
         }
       }
@@ -483,6 +510,21 @@ export class AtomicCoordinator {
         throw new Error(`Cannot fund Base HTLC: Lightning hold invoice is not in ACCEPTED state (${currentLnState})`);
       }
 
+      // Verify reservation is still valid and amounts/tokens match exactly
+      if (record.reservationId && record.reservationStatus && record.reservationStatus !== 'RESERVED') {
+        throw new Error(
+          `Cannot fund Base HTLC: Reservation ${record.reservationId} is in status ${record.reservationStatus}, expected RESERVED`
+        );
+      }
+      if (
+        record.reservedAmountUnits !== undefined &&
+        record.reservedAmountUnits !== record.expectedUsdcAmount
+      ) {
+        throw new Error(
+          `Cannot fund Base HTLC: Reserved amount (${record.reservedAmountUnits}) does not match expected USDC amount (${record.expectedUsdcAmount})`
+        );
+      }
+
       // Cross-Rail CLTV Safety Window Gate
       await this.assertLightningCltvSafety(record, 'FUND');
 
@@ -504,7 +546,7 @@ export class AtomicCoordinator {
         fundRes = await this.evm.fundHtlc({
           swapKey,
           hashLock: record.hashLock,
-          amountUnits: record.amountSats,
+          amountUnits: record.expectedUsdcAmount,
           tokenAddress: record.tokenAddress ?? this.defaultTokenAddress,
           refundLocktime,
           claimAddress: record.claimingAddress,
@@ -528,10 +570,15 @@ export class AtomicCoordinator {
         }
       }
 
+      if (record.reservationId) {
+        await this.inventory.commit(record.reservationId);
+      }
+
       const updated = this.updateRecord(
         executionId,
         {
           state: SovereignAtomicState.EVM_FUNDED,
+          reservationStatus: 'COMMITTED',
           evmSwapKey: swapKey,
           evmHtlcId: fundRes.htlcId ?? record.evmHtlcId,
           evmFundingTxHash: fundRes.txHash,
@@ -633,7 +680,7 @@ export class AtomicCoordinator {
           expectedHtlcId: record.evmHtlcId,
           expectedHashLock: record.hashLock,
           expectedClaimAddress: record.claimingAddress,
-          expectedAmount: record.amountSats,
+          expectedAmount: record.expectedUsdcAmount,
           requiredConfirmations: this.requiredConfirmations,
         });
       } catch (err: any) {
@@ -927,10 +974,14 @@ export class AtomicCoordinator {
       if (record.state === SovereignAtomicState.INVOICE_CREATED) {
         // Unfunded invoice expired -> cancel Lightning safely
         await this.lightning.cancelHoldInvoice(record.holdInvoice!.paymentHash);
+        if (record.reservationId && record.reservationStatus === 'RESERVED') {
+          await this.inventory.release(record.reservationId);
+        }
         return this.updateRecord(
           executionId,
           {
             state: SovereignAtomicState.EXPIRED,
+            reservationStatus: 'RELEASED',
             holdInvoice: { ...record.holdInvoice!, state: 'CANCELED', canceledAt: new Date() },
             actionInFlight: undefined,
             actionClaimedBy: undefined,
@@ -951,10 +1002,14 @@ export class AtomicCoordinator {
         }
 
         await this.lightning.cancelHoldInvoice(record.holdInvoice!.paymentHash);
+        if (record.reservationId && record.reservationStatus === 'RESERVED') {
+          await this.inventory.release(record.reservationId);
+        }
         return this.updateRecord(
           executionId,
           {
             state: SovereignAtomicState.INVOICE_CANCELED,
+            reservationStatus: 'RELEASED',
             holdInvoice: { ...record.holdInvoice!, state: 'CANCELED', canceledAt: new Date() },
             actionInFlight: undefined,
             actionClaimedBy: undefined,
@@ -1090,10 +1145,19 @@ export class AtomicCoordinator {
           }
         }
 
+        if (record.reservationId && record.reservationStatus === 'COMMITTED') {
+          if (typeof (this.inventory as any).restoreRefund === 'function') {
+            await (this.inventory as any).restoreRefund(record.reservationId);
+          } else {
+            await this.inventory.release(record.reservationId);
+          }
+        }
+
         const terminalRefunded = this.updateRecord(
           executionId,
           {
             state: SovereignAtomicState.REFUNDED,
+            reservationStatus: 'RELEASED',
             holdInvoice: {
               ...record.holdInvoice!,
               state: 'CANCELED',
@@ -1212,10 +1276,18 @@ export class AtomicCoordinator {
         if (lnState === 'ACCEPTED') {
           await this.lightning.cancelHoldInvoice(record.holdInvoice!.paymentHash);
         }
+        if (record.reservationId && record.reservationStatus === 'COMMITTED') {
+          if (typeof (this.inventory as any).restoreRefund === 'function') {
+            await (this.inventory as any).restoreRefund(record.reservationId);
+          } else {
+            await this.inventory.release(record.reservationId);
+          }
+        }
         return this.updateRecord(
           executionId,
           {
             state: SovereignAtomicState.REFUNDED,
+            reservationStatus: 'RELEASED',
             holdInvoice: { ...record.holdInvoice!, state: 'CANCELED', canceledAt: new Date() },
           },
           { reason: 'RECONCILED_FROM_AUTHORITATIVE_EVM_REFUNDED' }
@@ -1256,10 +1328,14 @@ export class AtomicCoordinator {
             }
           }
         } else if (lnState === 'CANCELED') {
+          if (record.reservationId && record.reservationStatus === 'RESERVED') {
+            await this.inventory.release(record.reservationId);
+          }
           return this.updateRecord(
             executionId,
             {
               state: SovereignAtomicState.INVOICE_CANCELED,
+              reservationStatus: 'RELEASED',
               holdInvoice: { ...record.holdInvoice, state: 'CANCELED', canceledAt: new Date() },
             },
             { reason: 'RECONCILED_FROM_LND_CANCELED' }

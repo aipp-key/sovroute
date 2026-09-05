@@ -579,3 +579,45 @@ CLIENT                        COORDINATOR / BACKENDS                    SMART CO
 ### Network Guard Boundary
 - Controlled development devnet (31337) in Phase 3; Phase 4 onwards exclusively guarded by `BaseNetworkGuard` on Base Sepolia (84532).
 - Strict fail-closed checks reject Ethereum Mainnet (1), Arbitrum (42161), Base Mainnet mutations (8453 in test phases), or any unapproved network.
+
+---
+
+## 37. PHASE 7+: DURABLE BASE USDC INVENTORY ACCOUNTING & RESERVATION SAFETY
+
+### 1. Currency Unit Separation
+- **Lightning Sats**: Satoshis (`amountSats`) strictly measure Lightning invoice amounts.
+- **Base USDC Atomic Units**: Base inventory and `HtlcErc20` funding strictly measure canonical Circle USDC in atomic units (6 decimals, where $1\text{ USDC} = 1{,}000{,}000\text{ units}$).
+- **Unit Separation Invariant**: Sats are never passed to Base inventory reservation, contract approvals, or `HtlcErc20.fund()`.
+
+### 2. Durable SQLite Storage Architecture
+Operator inventory and reservations are persisted in SQLite WAL mode:
+- `operator_inventory`: Tracks confirmed balance per token contract.
+- `liquidity_reservations`: Tracks each individual reservation with unique `reservation_id`, unique `execution_id`, `token_address`, `amount_units`, and `status`.
+- `sovereign_swaps`: Stores additive columns `reservation_id`, `reserved_amount_units`, and `reservation_status`.
+
+### 3. Strict Three-State Reservation Lifecycle
+```
+                 ┌────────────────────────────────────────────────────────┐
+                 │                                                        │
+                 ▼                                                        │
+         [   RESERVED   ] ────(Definitive Invoice Failure / Expiry)───────┤
+                 │                                                        │
+                 │ (Base HTLC Funded)                                     │
+                 ▼                                                        │
+         [  COMMITTED   ] ────(Verified On-Chain Refund)──────────────────┤
+                 │                                                        │
+                 │ (Client EVM Claim)                                     │
+                 ▼                                                        ▼
+         [ PERMANENTLY SPENT ]                                    [   RELEASED   ]
+   (Inventory remains deducted)                             (Restores available pool)
+```
+
+### 4. Atomic Concurrency & Over-Subscription Protection
+- All reservation, commit, release, and refund-restoration mutations execute inside `BEGIN IMMEDIATE` transactions.
+- Formula: $\text{availableBalance} = \text{confirmedBalance} - \text{reservedBalance} - \text{committedBalance}$.
+- If $\text{availableBalance} < \text{requestedAmount}$, reservation throws `INSUFFICIENT_OPERATOR_INVENTORY` fail-closed before any hold invoice is requested from LND.
+
+### 5. Crash Recovery & Ambiguity Handling
+- **Ambiguous Invoices**: If LND hold invoice creation times out or yields an ambiguous network error, the reservation is retained in `RESERVED` status. It is NEVER blindly released until LND invoice state is authoritatively queried.
+- **Node Reboot**: On restart, operator inventory balances and active reservations are reconstructed authoritatively from SQLite. Idempotent requests return the existing reservation with zero double-reservation.
+

@@ -1289,3 +1289,26 @@ Moving from local devnet (Hardhat instant automining) to a public rollup (Base S
 30. **LND Expiry While Base Transaction Pending**: High L2 congestion delays funding transaction close to Lightning CLTV expiry.
     - *Mitigation*: Coordinator re-checks remaining Lightning CLTV blocks before broadcasting EVM funding and before settlement. If safety window is $< 18\text{ blocks}$, funding is aborted.
 
+---
+
+## 29. LIQUIDITY ACCOUNTING & DURABLE RESERVATION INVARIANTS (PHASE 7+)
+
+### Core Invariants (LIQ-1 through LIQ-15)
+
+* **LIQ-1 (Unit Separation)**: Satoshis are NEVER used to measure Base USDC inventory or HTLC funding amounts. Sats strictly measure Lightning invoice amounts, while USDC atomic units (6 decimals) strictly measure Base collateral amounts.
+* **LIQ-2 (Currency-Safe Reservation)**: Operator Base USDC inventory is reserved using `expectedUsdcAmount` (atomic units), never `amountSats`.
+* **LIQ-3 (Durable Reservation Ownership)**: Reservations are persisted durably in SQLite with unique reservation IDs before hold invoice creation or any outbound network call.
+* **LIQ-4 (Strict Three-State Lifecycle)**: Every reservation transitions strictly through `RESERVED` -> `COMMITTED` (upon confirmed Base HTLC funding) or `RELEASED` (upon failure, expiry, or refund restoration).
+* **LIQ-5 (Fail-Closed on Insufficient Inventory)**: If `availableOperatorBalance < expectedUsdcAmount`, the reservation request is rejected immediately, and the Lightning hold invoice is NEVER created.
+* **LIQ-6 (Atomic Reservation CAS)**: Reservations execute inside SQLite `BEGIN IMMEDIATE` transactions to prevent concurrent workers from oversubscribing available inventory.
+* **LIQ-7 (Definitive Failure Release)**: If hold invoice creation definitively fails (with verified confirmation that no remote invoice was created), the reservation is immediately and cleanly released back to available inventory.
+* **LIQ-8 (Ambiguity-Safe Hold)**: If invoice creation or Base funding outcome is ambiguous or unverified, the reservation remains HELD in `RESERVED` status until reconciled; it is NEVER blindly released.
+* **LIQ-9 (Committed on Funding)**: Successful on-chain Base HTLC funding commits the reservation to `COMMITTED` state, permanently tracking outbound inventory expenditure.
+* **LIQ-10 (Crash Recovery Preservation)**: Node crash/restart reconstructs operator inventory balances and active reservations authoritatively from durable SQLite state.
+* **LIQ-11 (No Double-Reservation)**: Restart during swap processing or duplicate idempotency requests return the existing reservation and never double-reserve operator funds.
+* **LIQ-12 (Client Claim Spending)**: When a client claims the Base HTLC, the `COMMITTED` inventory is legitimately spent and is NEVER restored to available operator inventory.
+* **LIQ-13 (Verified Refund Restoration)**: A verified on-chain Base refund restores operator inventory exactly once, with idempotent replay protection preventing double-crediting.
+* **LIQ-14 (Unfunded Expiry Release)**: Swap expiration prior to Base HTLC funding safely releases the `RESERVED` inventory back to available balance.
+* **LIQ-15 (Balance Conservation)**: At all times and across all operations, the conservation invariant holds strictly:
+  $$\text{confirmedBalance} = \text{availableBalance} + \text{reservedBalance} + \text{committedBalance}$$
+

@@ -10,6 +10,7 @@ const unitTestFiles = [
   'tests/sovereign-atomic-core.test.ts',
   'tests/state-machine.test.ts',
   'tests/supply-chain-signature.test.ts',
+  'tests/liquidity-accounting-safety.test.ts',
 ];
 
 const res = spawnSync(

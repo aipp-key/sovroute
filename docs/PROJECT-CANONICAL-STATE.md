@@ -3,13 +3,13 @@
 ```
 Status: ACTIVE DEVELOPMENT
 Canonical Document: YES (Living Project Memory & Master State)
-Last Verified: 2026-09-04T22:13:16Z (UTC) / 2026-09-05T01:13:16+03:00 (Server Local)
-Last Updated: 2026-09-05T01:15:00+03:00
+Last Verified: 2026-09-05T14:25:00+03:00
+Last Updated: 2026-09-05T14:25:00+03:00
 Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
 Repository HEAD: Advances via documentation-only commits
-Current Phase: Waiting for Phase 2D Eligibility (Bitcoin Core IBD Completion)
+Current Phase: Liquidity Accounting & Durable Reservation Safety (phase-liquidity-accounting-safety) / Waiting for Phase 2D Eligibility
 Current Blocker: Bitcoin Core Initial Block Download (IBD) in Progress
-Next Safe Action: Allow IBD to finish uninterrupted; execute Phase 2D Certification Gate once initialblockdownload=false
+Next Safe Action: Complete liquidity safety branch push; allow IBD to finish uninterrupted for Phase 2D Certification Gate
 Production Funds: ZERO (0 real BTC, 0 USDC, 0 Base mainnet transactions)
 ```
 
@@ -591,6 +591,43 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
 - **Exact Git HEAD**: Advances via documentation-only commit.
 - **Production Mutation**: **NO** (Server untouched, IBD running, AIPP running with 0 restarts).
 - **Real Funds Touched**: **NO**.
+
+### 2026-09-05 14:25 +03:00 (Liquidity Accounting & Durable Reservation Safety — Branch `phase-liquidity-accounting-safety`)
+- **Session Objective**: Audit, prove, fix, and adversarially certify operator Base USDC inventory accounting and durable reservation safety in the Sovereign Atomic Core without modifying production or real funds.
+- **Root Causes Remediated**:
+  1. Operator inventory was previously reserving satoshis (`amountSats`) instead of canonical Base USDC atomic units (`expectedUsdcAmount`).
+  2. `fundEvmHtlc` previously passed `record.amountSats` to `evm.fundHtlc` instead of `record.expectedUsdcAmount`.
+  3. Liquidity reservations lacked durable SQLite persistence, atomic CAS reservation, and complete 3-state lifecycle (`RESERVED` -> `COMMITTED` -> `RELEASED`).
+  4. Invoice creation failures, timeouts, and restarts lacked crash-safe ambiguity reconciliation and refund anti-double-credit protections.
+- **Implementation Changes**:
+  - `src/atomic/types.ts`: Added `LiquidityReservationStatus` enum, updated `ILiquidityInventory` (added `restoreRefund`, `executionId`), updated `SovereignExecutionRecord` with `reservationId`, `reservedAmountUnits`, `reservationStatus`.
+  - `src/persistence/sqlite.ts`: Added tables `operator_inventory` and `liquidity_reservations` with unique index on `execution_id`; added additive schema migrations on `sovereign_swaps`; implemented atomic `BEGIN IMMEDIATE` methods: `setConfirmedOperatorBalance`, `getConfirmedOperatorBalance`, `getReservedOperatorBalance`, `getCommittedOperatorBalance`, `getAvailableOperatorBalance`, `reserveLiquidity` (idempotent CAS), `commitLiquidityReservation`, `releaseLiquidityReservation`, `restoreRefundLiquidityReservation`.
+  - `src/atomic/liquidity/sqlite-inventory.ts`: Created new production-ready `SqliteLiquidityInventory` implementing `ILiquidityInventory`.
+  - `src/atomic/liquidity/fake-inventory.ts`: Upgraded in-memory inventory with state tracking (`RESERVED`, `COMMITTED`, `RELEASED`) and refund restoration.
+  - `src/atomic/coordinator/coordinator.ts`:
+    - `prepareSwap`: Validates strictly positive amounts (`amountSats > 0n`, `expectedUsdcAmount > 0n`). Reserves `expectedUsdcAmount` (USDC atomic units). Durably persists reservation before hold invoice. Releases reservation on definitive invoice failure.
+    - `fundEvmHtlc`: Asserts reservation is in `RESERVED` status and amount matches `expectedUsdcAmount`. Funds EVM HTLC with `expectedUsdcAmount`. Commits reservation on funding success.
+    - `claimHtlcAndSettleLightning`: Client claim permanently spends committed inventory (never restored to available).
+    - `processRefund`: On unfunded expiry or pre-fund cancel, releases `RESERVED` inventory. On verified Base refund, calls `restoreRefund` to restore available inventory exactly once (prevents double-credit).
+    - `reconcileSwap`: Reconciles external states before applying inventory release/restore.
+- **Specification & Documentation Updated**:
+  - `SECURITY_MODEL_V1.md`: Added Section 29 formalizing Liquidity Accounting Invariants `LIQ-1` through `LIQ-15`, preserving `SEC-1` through `SEC-25`.
+  - `ARCHITECTURE_V4_SOVEREIGN_CORE.md`: Added Section 37 documenting currency unit separation, durable SQLite storage, 3-state lifecycle, and `BEGIN IMMEDIATE` concurrency safety.
+  - `README.md`: Updated test counts to 176 automated unit tests across 13 suites.
+- **Adversarial Verification**:
+  - Created `tests/liquidity-accounting-safety.test.ts` covering all 25 test cases and `LIQ-1` through `LIQ-15` invariants (21/21 passing).
+  - Executed full test suite: 176 unit tests passed (13 suites, 0 fail).
+  - Executed `npm run coordinator:test`: 51 tests passed (0 fail).
+  - Executed `npm run phase6:test`: 130 tests passed (0 fail).
+  - Executed `npm run typecheck`: 0 errors.
+  - Executed `python tests/scan-secrets.py`: Clean (0 secrets).
+- **Production Server & Real Funds Boundary**:
+  - Production server (`aliasdesk-server`): ZERO mutation (untouched).
+  - Bitcoin Core: Running IBD uninterrupted; no restart, no shutdown.
+  - AIPP: All 5 containers undisturbed with `Restarts=0`.
+  - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
+- **Branch Boundary**: Dedicated branch `phase-liquidity-accounting-safety` created; NOT merged to `phase-7-production-readiness-closure`.
+- **Result**: **PASS — BASE USDC INVENTORY ACCOUNTING FULLY DURABLE & UNIT-SAFE**.
 
 ---
 *End of Canonical Master Project State Document.*

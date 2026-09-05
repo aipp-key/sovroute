@@ -30,7 +30,18 @@ import {
   SovereignAtomicState,
   type SovereignSwapTransition,
   type HoldInvoice,
+  type LiquidityReservationStatus,
 } from '../atomic/types.ts';
+
+export interface LiquidityReservationRecord {
+  id: string;
+  executionId: string;
+  tokenAddress: string;
+  amountUnits: bigint;
+  status: LiquidityReservationStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 export interface SqliteDbOptions {
   filename?: string;
@@ -185,6 +196,9 @@ export class SqlitePersistence {
         hash_lock TEXT UNIQUE NOT NULL,
         payment_hash TEXT UNIQUE NOT NULL,
         state TEXT NOT NULL,
+        reservation_id TEXT,
+        reserved_amount_units TEXT,
+        reservation_status TEXT,
         amount_sats TEXT NOT NULL,
         expected_usdc_amount TEXT NOT NULL,
         claiming_address TEXT NOT NULL,
@@ -224,6 +238,7 @@ export class SqlitePersistence {
       CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_hash_lock ON sovereign_swaps(hash_lock);
       CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_payment_hash ON sovereign_swaps(payment_hash);
       CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_recovery ON sovereign_swaps(recovery_required);
+      CREATE INDEX IF NOT EXISTS idx_sovereign_swaps_reservation ON sovereign_swaps(reservation_id);
 
       CREATE TABLE IF NOT EXISTS sovereign_swap_transitions (
         id TEXT PRIMARY KEY,
@@ -238,6 +253,25 @@ export class SqlitePersistence {
       );
 
       CREATE INDEX IF NOT EXISTS idx_sovereign_transitions_swap ON sovereign_swap_transitions(swap_id);
+
+      CREATE TABLE IF NOT EXISTS operator_inventory (
+        token_address TEXT PRIMARY KEY,
+        confirmed_balance TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS liquidity_reservations (
+        id TEXT PRIMARY KEY,
+        execution_id TEXT NOT NULL,
+        token_address TEXT NOT NULL,
+        amount_units TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_liquidity_reservations_exec ON liquidity_reservations(execution_id);
+      CREATE INDEX IF NOT EXISTS idx_liquidity_reservations_token_status ON liquidity_reservations(token_address, status);
     `);
 
     // Safe additive migrations for existing DB
@@ -253,7 +287,6 @@ export class SqlitePersistence {
       // Column already exists
     }
 
-
     try {
       this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN action_generation INTEGER NOT NULL DEFAULT 0;');
     } catch {
@@ -268,6 +301,24 @@ export class SqlitePersistence {
 
     try {
       this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN action_lease_expires_at TEXT;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN reservation_id TEXT;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN reserved_amount_units TEXT;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN reservation_status TEXT;');
     } catch {
       // Column already exists
     }
@@ -1447,6 +1498,7 @@ export class SqlitePersistence {
     const stmt = this.db.prepare(`
       INSERT INTO sovereign_swaps (
         id, idempotency_key, hash_lock, payment_hash, state,
+        reservation_id, reserved_amount_units, reservation_status,
         amount_sats, expected_usdc_amount, claiming_address, target_destination_address,
         token_address, refund_address, cltv_expiry_blocks, timelock_seconds, refund_locktime,
         economic_fingerprint, bolt11, lightning_invoice_state, lightning_held_at,
@@ -1456,6 +1508,7 @@ export class SqlitePersistence {
         failure_reason, retry_count, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?,
+        ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
@@ -1475,6 +1528,9 @@ export class SqlitePersistence {
       record.hashLock.toLowerCase(),
       (record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '')).toLowerCase(),
       record.state,
+      record.reservationId ?? null,
+      record.reservedAmountUnits !== undefined ? record.reservedAmountUnits.toString() : null,
+      record.reservationStatus ?? null,
       record.amountSats.toString(),
       record.expectedUsdcAmount.toString(),
       record.claimingAddress.toLowerCase(),
@@ -1576,6 +1632,18 @@ export class SqlitePersistence {
     if (updates.state !== undefined) {
       setClauses.push('state = ?');
       values.push(updates.state);
+    }
+    if (updates.reservationId !== undefined) {
+      setClauses.push('reservation_id = ?');
+      values.push(updates.reservationId);
+    }
+    if (updates.reservedAmountUnits !== undefined) {
+      setClauses.push('reserved_amount_units = ?');
+      values.push(updates.reservedAmountUnits.toString());
+    }
+    if (updates.reservationStatus !== undefined) {
+      setClauses.push('reservation_status = ?');
+      values.push(updates.reservationStatus);
     }
     if (updates.holdInvoice?.bolt11 !== undefined) {
       setClauses.push('bolt11 = ?');
@@ -1792,6 +1860,9 @@ export class SqlitePersistence {
       amountSats: BigInt(row.amount_sats as string),
       expectedUsdcAmount: BigInt(row.expected_usdc_amount as string),
       state: row.state as SovereignAtomicState,
+      reservationId: (row.reservation_id as string) || undefined,
+      reservedAmountUnits: row.reserved_amount_units ? BigInt(row.reserved_amount_units as string) : undefined,
+      reservationStatus: (row.reservation_status as LiquidityReservationStatus) || undefined,
       holdInvoice,
       evmSwapKey: (row.evm_swap_key as string) || undefined,
       evmHtlcId: (row.evm_htlc_id as string) || undefined,
@@ -1812,6 +1883,248 @@ export class SqlitePersistence {
       recoveryRequired: Number(row.recovery_required || 0) === 1,
       failureReason: (row.failure_reason as string) || undefined,
       retryCount: Number(row.retry_count || 0),
+      createdAt: new Date(row.created_at as string),
+      updatedAt: new Date(row.updated_at as string),
+    };
+  }
+
+  // =========================================================================
+  // DURABLE LIQUIDITY INVENTORY PERSISTENCE (PHASE LIQUIDITY ACCOUNTING SAFETY)
+  // =========================================================================
+
+  public setConfirmedOperatorBalance(tokenAddress: string, balance: bigint): void {
+    const token = tokenAddress.toLowerCase();
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(`
+      INSERT INTO operator_inventory (token_address, confirmed_balance, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(token_address) DO UPDATE SET
+        confirmed_balance = excluded.confirmed_balance,
+        updated_at = excluded.updated_at
+    `);
+    stmt.run(token, balance.toString(), now);
+  }
+
+  public getConfirmedOperatorBalance(tokenAddress: string): bigint {
+    const token = tokenAddress.toLowerCase();
+    const row = this.db
+      .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
+      .get(token) as { confirmed_balance: string } | undefined;
+    return row ? BigInt(row.confirmed_balance) : 0n;
+  }
+
+  public getReservedOperatorBalance(tokenAddress: string): bigint {
+    const token = tokenAddress.toLowerCase();
+    const rows = this.db
+      .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+      .all(token, 'RESERVED') as { amount_units: string }[];
+    let sum = 0n;
+    for (const r of rows) {
+      sum += BigInt(r.amount_units);
+    }
+    return sum;
+  }
+
+  public getCommittedOperatorBalance(tokenAddress: string): bigint {
+    const token = tokenAddress.toLowerCase();
+    const rows = this.db
+      .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+      .all(token, 'COMMITTED') as { amount_units: string }[];
+    let sum = 0n;
+    for (const r of rows) {
+      sum += BigInt(r.amount_units);
+    }
+    return sum;
+  }
+
+  public getAvailableOperatorBalance(tokenAddress: string): bigint {
+    const confirmed = this.getConfirmedOperatorBalance(tokenAddress);
+    const reserved = this.getReservedOperatorBalance(tokenAddress);
+    const committed = this.getCommittedOperatorBalance(tokenAddress);
+    const available = confirmed - reserved - committed;
+    return available > 0n ? available : 0n;
+  }
+
+  public reserveLiquidity(
+    executionId: string,
+    tokenAddress: string,
+    amountUnits: bigint
+  ): { reservationId: string; reserved: boolean } {
+    if (amountUnits <= 0n) {
+      throw new Error(
+        `RESERVE_INVALID_AMOUNT: Reservation amount must be strictly positive integer units, got ${amountUnits}`
+      );
+    }
+    const token = tokenAddress.toLowerCase();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      // 1. Idempotency check: if this execution already owns an active or committed reservation, return it
+      const existing = this.db
+        .prepare('SELECT * FROM liquidity_reservations WHERE execution_id = ?')
+        .get(executionId) as Record<string, unknown> | undefined;
+      if (existing) {
+        const status = existing.status as string;
+        if (status === 'RESERVED' || status === 'COMMITTED') {
+          this.db.exec('COMMIT');
+          return {
+            reservationId: existing.id as string,
+            reserved: true,
+          };
+        }
+      }
+
+      // 2. Compute available balance: CONFIRMED - ACTIVE_RESERVED - COMMITTED
+      const confirmedRow = this.db
+        .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
+        .get(token) as { confirmed_balance: string } | undefined;
+      const confirmed = confirmedRow ? BigInt(confirmedRow.confirmed_balance) : 0n;
+
+      const reservedRows = this.db
+        .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+        .all(token, 'RESERVED') as { amount_units: string }[];
+      let activeReserved = 0n;
+      for (const r of reservedRows) {
+        activeReserved += BigInt(r.amount_units);
+      }
+
+      const committedRows = this.db
+        .prepare('SELECT amount_units FROM liquidity_reservations WHERE token_address = ? AND status = ?')
+        .all(token, 'COMMITTED') as { amount_units: string }[];
+      let committed = 0n;
+      for (const r of committedRows) {
+        committed += BigInt(r.amount_units);
+      }
+
+      const available = confirmed - activeReserved - committed;
+
+      if (available < amountUnits) {
+        this.db.exec('COMMIT');
+        return {
+          reservationId: '',
+          reserved: false,
+        };
+      }
+
+      const reservationId = randomUUID();
+      const now = new Date().toISOString();
+      this.db
+        .prepare(`
+          INSERT INTO liquidity_reservations (id, execution_id, token_address, amount_units, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'RESERVED', ?, ?)
+        `)
+        .run(reservationId, executionId, token, amountUnits.toString(), now, now);
+
+      this.db.exec('COMMIT');
+      return {
+        reservationId,
+        reserved: true,
+      };
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public commitLiquidityReservation(reservationId: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db
+        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+        .get(reservationId) as { status: string } | undefined;
+      if (row && row.status === 'RESERVED') {
+        const now = new Date().toISOString();
+        this.db
+          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
+          .run('COMMITTED', now, reservationId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public releaseLiquidityReservation(reservationId: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db
+        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+        .get(reservationId) as { status: string } | undefined;
+      if (row && row.status === 'RESERVED') {
+        const now = new Date().toISOString();
+        this.db
+          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
+          .run('RELEASED', now, reservationId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public restoreRefundLiquidityReservation(reservationId: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db
+        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+        .get(reservationId) as { status: string } | undefined;
+      if (row && row.status === 'COMMITTED') {
+        const now = new Date().toISOString();
+        this.db
+          .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
+          .run('RELEASED', now, reservationId);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+
+  public getLiquidityReservation(reservationId: string): LiquidityReservationRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM liquidity_reservations WHERE id = ?')
+      .get(reservationId) as Record<string, unknown> | undefined;
+    return row ? this.mapRowToLiquidityReservation(row) : null;
+  }
+
+  public getLiquidityReservationByExecutionId(executionId: string): LiquidityReservationRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM liquidity_reservations WHERE execution_id = ?')
+      .get(executionId) as Record<string, unknown> | undefined;
+    return row ? this.mapRowToLiquidityReservation(row) : null;
+  }
+
+  public listLiquidityReservations(tokenAddress?: string): LiquidityReservationRecord[] {
+    let rows: Record<string, unknown>[];
+    if (tokenAddress) {
+      rows = this.db
+        .prepare('SELECT * FROM liquidity_reservations WHERE token_address = ? ORDER BY created_at ASC')
+        .all(tokenAddress.toLowerCase()) as Record<string, unknown>[];
+    } else {
+      rows = this.db
+        .prepare('SELECT * FROM liquidity_reservations ORDER BY created_at ASC')
+        .all() as Record<string, unknown>[];
+    }
+    return rows.map((r) => this.mapRowToLiquidityReservation(r));
+  }
+
+  private mapRowToLiquidityReservation(row: Record<string, unknown>): LiquidityReservationRecord {
+    return {
+      id: row.id as string,
+      executionId: row.execution_id as string,
+      tokenAddress: row.token_address as string,
+      amountUnits: BigInt(row.amount_units as string),
+      status: row.status as LiquidityReservationStatus,
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
     };

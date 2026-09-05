@@ -8,9 +8,17 @@
 import { randomUUID } from 'node:crypto';
 import type { ILiquidityInventory } from '../types.ts';
 
+export interface FakeReservationRecord {
+  id: string;
+  executionId?: string | undefined;
+  amount: bigint;
+  tokenAddress: string;
+  status: 'RESERVED' | 'COMMITTED' | 'RELEASED';
+}
+
 export class FakeLiquidityInventory implements ILiquidityInventory {
   private balances = new Map<string, bigint>();
-  private reservations = new Map<string, { amount: bigint; tokenAddress: string }>();
+  private reservations = new Map<string, FakeReservationRecord>();
 
   constructor(initialBalances?: Record<string, bigint>) {
     if (initialBalances) {
@@ -22,18 +30,36 @@ export class FakeLiquidityInventory implements ILiquidityInventory {
 
   async reserve(
     amountUnits: bigint,
-    tokenAddress: string
+    tokenAddress: string,
+    executionId?: string
   ): Promise<{ reservationId: string; reserved: boolean }> {
+    if (amountUnits <= 0n) {
+      return { reservationId: '', reserved: false };
+    }
     const token = tokenAddress.toLowerCase();
-    const available = this.balances.get(token) ?? 0n;
 
+    // Idempotency: if executionId already has active/committed reservation, return it
+    if (executionId) {
+      for (const res of this.reservations.values()) {
+        if (res.executionId === executionId && (res.status === 'RESERVED' || res.status === 'COMMITTED')) {
+          return { reservationId: res.id, reserved: true };
+        }
+      }
+    }
+
+    const available = await this.getAvailableBalance(token);
     if (available < amountUnits) {
       return { reservationId: '', reserved: false };
     }
 
-    this.balances.set(token, available - amountUnits);
     const reservationId = randomUUID();
-    this.reservations.set(reservationId, { amount: amountUnits, tokenAddress: token });
+    this.reservations.set(reservationId, {
+      id: reservationId,
+      executionId,
+      amount: amountUnits,
+      tokenAddress: token,
+      status: 'RESERVED',
+    });
 
     return { reservationId, reserved: true };
   }
@@ -41,18 +67,62 @@ export class FakeLiquidityInventory implements ILiquidityInventory {
   async release(reservationId: string): Promise<void> {
     const res = this.reservations.get(reservationId);
     if (!res) return;
-
-    const available = this.balances.get(res.tokenAddress) ?? 0n;
-    this.balances.set(res.tokenAddress, available + res.amount);
-    this.reservations.delete(reservationId);
+    if (res.status === 'RESERVED') {
+      res.status = 'RELEASED';
+    }
   }
 
   async commit(reservationId: string): Promise<void> {
-    this.reservations.delete(reservationId);
+    const res = this.reservations.get(reservationId);
+    if (!res) return;
+    if (res.status === 'RESERVED') {
+      res.status = 'COMMITTED';
+    }
+  }
+
+  async restoreRefund(reservationId: string): Promise<void> {
+    const res = this.reservations.get(reservationId);
+    if (!res) return;
+    if (res.status === 'COMMITTED') {
+      res.status = 'RELEASED';
+    }
   }
 
   async getAvailableBalance(tokenAddress: string): Promise<bigint> {
-    return this.balances.get(tokenAddress.toLowerCase()) ?? 0n;
+    const token = tokenAddress.toLowerCase();
+    const confirmed = this.balances.get(token) ?? 0n;
+    let reserved = 0n;
+    let committed = 0n;
+    for (const res of this.reservations.values()) {
+      if (res.tokenAddress === token) {
+        if (res.status === 'RESERVED') reserved += res.amount;
+        else if (res.status === 'COMMITTED') committed += res.amount;
+      }
+    }
+    const available = confirmed - reserved - committed;
+    return available > 0n ? available : 0n;
+  }
+
+  async getReservedBalance(tokenAddress: string): Promise<bigint> {
+    const token = tokenAddress.toLowerCase();
+    let reserved = 0n;
+    for (const res of this.reservations.values()) {
+      if (res.tokenAddress === token && res.status === 'RESERVED') {
+        reserved += res.amount;
+      }
+    }
+    return reserved;
+  }
+
+  async getCommittedBalance(tokenAddress: string): Promise<bigint> {
+    const token = tokenAddress.toLowerCase();
+    let committed = 0n;
+    for (const res of this.reservations.values()) {
+      if (res.tokenAddress === token && res.status === 'COMMITTED') {
+        committed += res.amount;
+      }
+    }
+    return committed;
   }
 
   setBalance(tokenAddress: string, amount: bigint): void {
