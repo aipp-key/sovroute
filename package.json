@@ -2,6 +2,7 @@
   "name": "universal-agent-asset-router",
   "version": "0.1.0",
   "description": "Minimal, deterministic asset-routing and execution engine for software and AI agents",
+  "homepage": "https://sovroute.com",
   "type": "module",
   "scripts": {
     "test": "node tests/run-unit-tests.mjs",

@@ -1,16 +1,17 @@
-# Universal Agent Asset Router — Canonical Project State
+# SovRoute — Canonical Project State
 
 ```
 Status: ACTIVE DEVELOPMENT
 Canonical Document: YES (Living Project Memory & Master State)
-Last Verified: 2026-09-05T15:30:00+03:00
-Last Updated: 2026-09-05T15:30:00+03:00
+Last Verified: 2026-09-05T15:45:00+03:00
+Last Updated: 2026-09-05T15:45:00+03:00
+Canonical Domain: https://sovroute.com
 Historical Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
 Canonical SovRoute Application Baseline (Post-Liquidity): 906e5d1720ccd00b89a3f00778c1c302d4fe1da9
 Repository HEAD: Advances via documentation-only commits
-Current Phase: Stage 1 Canonical Integration Complete / Advancing to Stage 2 Brand Alignment
+Current Phase: Stage 2 Complete (Brand & Repository Alignment to SovRoute) / Stage 3 Base Inventory Audit
 Current Blocker: Bitcoin Core Initial Block Download (IBD) in Progress
-Next Safe Action: Stage 2 GitHub repository rename to aipp-key/sovroute; allow IBD to finish uninterrupted
+Next Safe Action: Stage 3 Base USDC Inventory Reconciliation Audit; allow IBD to finish uninterrupted
 Production Funds: ZERO (0 real BTC, 0 USDC, 0 Base mainnet transactions)
 ```
 
@@ -652,6 +653,24 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
   - AIPP: All 5 containers undisturbed with `Restarts=0`.
   - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
 - **Result**: **PASS — CANONICAL INTEGRATION COMPLETE & NEW BASELINE ESTABLISHED**.
+
+### 2026-09-05 15:45 +03:00 (Stage 2 — SovRoute Brand & Repository Alignment)
+- **Session Objective**: Complete Stage 2 brand and repository transition to SovRoute (`https://sovroute.com`), aligning active documentation and repository remote without touching historical artifacts or internal architecture symbols.
+- **Repository Rename & Remote Alignment**:
+  - Remote repository renamed on GitHub to `aipp-key/sovroute` (private visibility preserved).
+  - Local origin remote updated: `https://github.com/aipp-key/sovroute.git`.
+  - Canonical branch `phase-7-production-readiness-closure` verified matching remote.
+- **Brand & Metadata Alignment**:
+  - `README.md`: Primary title updated to `SovRoute`, descriptor `Sovereign Agent-Native Asset Execution Infrastructure`, website `https://sovroute.com`.
+  - `ARCHITECTURE_V4_SOVEREIGN_CORE.md`: Brand updated to `SovRoute` with canonical domain.
+  - `SECURITY_MODEL_V1.md`: Brand updated to `SovRoute` with canonical domain.
+  - `package.json`: Added `homepage: "https://sovroute.com"`, internal package identity preserved.
+  - Internal core names (`Universal Router`, `Sovereign Atomic Core`, `AtomicCoordinator`) and historical reports preserved without mass replacement.
+- **Verification**:
+  - `npm run typecheck`: 0 errors.
+  - `python tests/scan-secrets.py`: Clean (0 secrets).
+  - `npm test`: 180 passed, 14 suites, 0 failures.
+- **Result**: **PASS — STAGE 2 SOVROUTE BRAND & REPO TRANSITION COMPLETE**.
 
 ---
 *End of Canonical Master Project State Document.*

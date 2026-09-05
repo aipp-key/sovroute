@@ -1,8 +1,9 @@
 # SECURITY MODEL V1 — SOVEREIGN ATOMIC EXECUTION CORE
-**Universal Agent Asset Router**  
+**SovRoute** (formerly Universal Agent Asset Router)  
 **Document Version**: 1.0.0  
+**Canonical Domain**: [https://sovroute.com](https://sovroute.com)  
 **Status**: ACTIVE — MANDATORY SYSTEM-WIDE SOURCE OF TRUTH  
-**Applies To**: Architecture V4+, Sovereign Atomic Core, Router Engine  
+**Applies To**: Architecture V4+, Sovereign Atomic Core, SovRoute Engine  
 
 ---
 

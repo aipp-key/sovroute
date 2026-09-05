@@ -1,14 +1,15 @@
-# Universal Agent Asset Router
+# SovRoute
 **Sovereign Agent-Native Asset Execution Infrastructure**  
-*Architecture V4 — Sovereign Atomic Core*
+*Architecture V4 — Sovereign Atomic Core*  
+**Website**: [https://sovroute.com](https://sovroute.com)
 
 ---
 
 ## Overview
 
-The **Universal Agent Asset Router** is a sovereign, deterministic, non-custodial asset execution engine designed specifically for autonomous AI agents and automated software systems. 
+**SovRoute** (formerly developed under the *Universal Agent Asset Router* project name) is a sovereign, deterministic, non-custodial asset execution engine designed specifically for autonomous AI agents and automated software systems. 
 
-Rather than relying on third-party custodial web services, centralized bridges, or hosted swap aggregators, the Router owns its **primary execution rail** using cryptographically atomic protocols.
+Rather than relying on third-party custodial web services, centralized bridges, or hosted swap aggregators, SovRoute owns its **primary execution rail** using cryptographically atomic protocols.
 
 ### Primary Route
 

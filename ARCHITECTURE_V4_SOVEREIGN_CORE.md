@@ -1,6 +1,7 @@
 # ARCHITECTURE V4 — SOVEREIGN ATOMIC CORE
-**Universal Agent Asset Router**  
+**SovRoute** (formerly Universal Agent Asset Router)  
 **Document Version**: 4.0.0  
+**Canonical Domain**: [https://sovroute.com](https://sovroute.com)  
 **Status**: APPROVED & FROZEN — SYSTEM-WIDE ARCHITECTURAL SPECIFICATION  
 **Supersedes**: Architecture V3, All Provider-First Designs  
 
