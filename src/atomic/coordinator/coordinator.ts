@@ -49,6 +49,7 @@ import {
 } from '../evm/evm-types.ts';
 import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../evm/base-guard.ts';
 import { SqlitePersistence } from '../../persistence/sqlite.ts';
+import { SqliteLiquidityInventory } from '../liquidity/sqlite-inventory.ts';
 
 export interface CreateAtomicSwapParams {
   idempotencyKey: string;
@@ -1322,16 +1323,6 @@ export class AtomicCoordinator {
     }
 
     try {
-      // Bounded retry guard
-      const currentRetries = record.retryCount ?? 0;
-      if (currentRetries >= this.maxRetries) {
-        return this.updateRecord(
-          executionId,
-          { recoveryRequired: true, failureReason: `Max retries (${this.maxRetries}) exceeded during reconciliation` },
-          { reason: 'MAX_RECONCILIATION_RETRIES_EXCEEDED' }
-        );
-      }
-      this.updateRecord(executionId, { retryCount: currentRetries + 1 });
 
       const lightningObservation = await this.observeLightningForRecovery(record);
       const evmObservation = await this.observeEvmForRecovery(record);
@@ -1448,14 +1439,39 @@ export class AtomicCoordinator {
         if (lnState === 'ACCEPTED') {
           // If we have claim evidence or can extract it, settle LND
           if (record.evmClaimTxHash) {
+            const currentRetries = record.retryCount ?? 0;
+            if (currentRetries >= this.maxRetries) {
+              return this.markRecoveryRequired(
+                executionId,
+                `Max mutation retries (${this.maxRetries}) exceeded while attempting to settle Lightning from EVM claim`,
+                'MAX_RETRIES_EXCEEDED'
+              );
+            }
+            this.updateRecord(executionId, { retryCount: currentRetries + 1 });
             try {
               return await this.settleLightningFromEvmClaim(executionId, record.evmClaimTxHash, workerId);
             } catch {
               // Settlement in progress or manual review needed
             }
           } else {
-            if (record.reservationId && (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined)) {
-              await this.inventory.commit(record.reservationId);
+            if (record.reservationId) {
+              const isSqliteInventory =
+                this.inventory instanceof SqliteLiquidityInventory ||
+                typeof (this.inventory as any).getPersistence === 'function';
+
+              if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
+                try {
+                  this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
+                } catch (commitErr: any) {
+                  return this.markRecoveryRequired(
+                    executionId,
+                    `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                    'RESERVATION_COMMIT_FAILED'
+                  );
+                }
+              } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
+                await this.inventory.commit(record.reservationId);
+              }
             }
             return this.updateRecord(
               executionId,
@@ -1479,6 +1495,15 @@ export class AtomicCoordinator {
       if (isBaseRefunded) {
         if (lnState === 'OPEN' || lnState === 'ACCEPTED') {
           const cleanHash = record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '').toLowerCase();
+          const currentRetries = record.retryCount ?? 0;
+          if (currentRetries >= this.maxRetries) {
+            return this.markRecoveryRequired(
+              executionId,
+              `Max mutation retries (${this.maxRetries}) exceeded while attempting to cancel Lightning hold invoice`,
+              'MAX_RETRIES_EXCEEDED'
+            );
+          }
+          this.updateRecord(executionId, { retryCount: currentRetries + 1 });
           let cancelConfirmed = false;
           let authoritativeCanceledAt: Date | undefined;
 
@@ -1590,6 +1615,15 @@ export class AtomicCoordinator {
 
         if (evmState && evmState.blockTimestamp >= evmState.timelock) {
           // Timelock expired -> resume refund
+          const currentRetries = record.retryCount ?? 0;
+          if (currentRetries >= this.maxRetries) {
+            return this.markRecoveryRequired(
+              executionId,
+              `Max mutation retries (${this.maxRetries}) exceeded while attempting to process Base refund`,
+              'MAX_RETRIES_EXCEEDED'
+            );
+          }
+          this.updateRecord(executionId, { retryCount: currentRetries + 1 });
           try {
             return await this.processRefund(executionId, workerId);
           } catch {
@@ -1597,8 +1631,24 @@ export class AtomicCoordinator {
           }
         } else {
           // Locked and waiting for claim or timelock
-          if (record.reservationId && (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined)) {
-            await this.inventory.commit(record.reservationId);
+          if (record.reservationId) {
+            const isSqliteInventory =
+              this.inventory instanceof SqliteLiquidityInventory ||
+              typeof (this.inventory as any).getPersistence === 'function';
+
+            if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
+              try {
+                this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
+              } catch (commitErr: any) {
+                return this.markRecoveryRequired(
+                  executionId,
+                  `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                  'RESERVATION_COMMIT_FAILED'
+                );
+              }
+            } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
+              await this.inventory.commit(record.reservationId);
+            }
           }
           return this.updateRecord(
             executionId,
@@ -1634,7 +1684,11 @@ export class AtomicCoordinator {
           }
         }
 
-        if (record.state === SovereignAtomicState.PLAN_PREPARED) {
+        if (
+          record.state === SovereignAtomicState.PLAN_PREPARED ||
+          record.state === SovereignAtomicState.INVOICE_CREATED ||
+          record.state === SovereignAtomicState.RECOVERY_REQUIRED
+        ) {
           if (lnState === 'OPEN') {
             return this.updateRecord(
               executionId,
@@ -1644,10 +1698,10 @@ export class AtomicCoordinator {
                 recoveryRequired: false,
                 failureReason: undefined,
               },
-              { reason: 'RECONCILED_FROM_PLAN_PREPARED_TO_INVOICE_CREATED' }
+              { reason: 'RECONCILED_FROM_OPEN_INVOICE_AND_EVM_ABSENCE' }
             );
           }
-          if (lnState === 'ACCEPTED') {
+          if (lnState === 'ACCEPTED' && record.state !== SovereignAtomicState.RECOVERY_REQUIRED) {
             record = this.updateRecord(
               executionId,
               {
@@ -1656,8 +1710,17 @@ export class AtomicCoordinator {
                 recoveryRequired: false,
                 failureReason: undefined,
               },
-              { reason: 'RECONCILED_FROM_PLAN_PREPARED_TO_LIGHTNING_HELD' }
+              { reason: 'RECONCILED_FROM_ACCEPTED_INVOICE_AND_EVM_ABSENCE' }
             );
+            const currentRetries = record.retryCount ?? 0;
+            if (currentRetries >= this.maxRetries) {
+              return this.markRecoveryRequired(
+                executionId,
+                `EVM funding retry limit (${this.maxRetries}) exceeded`,
+                'MAX_RETRIES_EXCEEDED'
+              );
+            }
+            this.updateRecord(executionId, { retryCount: currentRetries + 1 });
             try {
               return await this.fundEvmHtlc(executionId, workerId);
             } catch {
@@ -1670,6 +1733,15 @@ export class AtomicCoordinator {
           // Only the pristine held state may begin funding. Pending/recovery
           // states require durable intent recovery and are never blindly retried.
           if (record.state === SovereignAtomicState.LIGHTNING_HELD) {
+            const currentRetries = record.retryCount ?? 0;
+            if (currentRetries >= this.maxRetries) {
+              return this.markRecoveryRequired(
+                executionId,
+                `EVM funding retry limit (${this.maxRetries}) exceeded`,
+                'MAX_RETRIES_EXCEEDED'
+              );
+            }
+            this.updateRecord(executionId, { retryCount: currentRetries + 1 });
             try {
               return await this.fundEvmHtlc(executionId, workerId);
             } catch {

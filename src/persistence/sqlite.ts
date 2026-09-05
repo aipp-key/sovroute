@@ -2361,14 +2361,54 @@ export class SqlitePersistence {
     this.beginImmediateWithRetry();
     try {
       const now = new Date().toISOString();
-      const row = this.db
-        .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
-        .get(reservationId) as { status: string } | undefined;
-      if (row && (row.status === 'RESERVED' || row.status === 'COMMITTED')) {
+
+      // 1. SELECT reservation by id
+      const resRow = this.db
+        .prepare('SELECT id, execution_id, token_address, amount_units, status FROM liquidity_reservations WHERE id = ?')
+        .get(reservationId) as { id: string; execution_id: string; token_address: string; amount_units: string; status: string } | undefined;
+
+      // 2. verify it exists
+      if (!resRow) {
+        throw new Error(`RESERVATION_NOT_FOUND: Liquidity reservation ${reservationId} not found for swap ${swapId}`);
+      }
+
+      // 3. verify reservation.execution_id / owner matches swapId
+      if (resRow.execution_id !== swapId) {
+        throw new Error(
+          `RESERVATION_OWNER_MISMATCH: Liquidity reservation ${reservationId} belongs to execution ${resRow.execution_id}, not swap ${swapId}`
+        );
+      }
+
+      // 4. verify reservation state
+      if (resRow.status === 'RESERVED') {
         this.db
           .prepare('UPDATE liquidity_reservations SET status = ?, updated_at = ? WHERE id = ?')
           .run('COMMITTED', now, reservationId);
+      } else if (resRow.status === 'COMMITTED') {
+        // Idempotent replay permitted
+      } else {
+        throw new Error(
+          `INVALID_RESERVATION_STATUS: Cannot commit reservation ${reservationId} in state ${resRow.status} for swap ${swapId}`
+        );
       }
+
+      // 5. verify swap exists
+      const swapRow = this.db
+        .prepare('SELECT id, reservation_id, reservation_status, state FROM sovereign_swaps WHERE id = ?')
+        .get(swapId) as { id: string; reservation_id: string | null; reservation_status: string | null; state: string } | undefined;
+
+      if (!swapRow) {
+        throw new Error(`SOVEREIGN_SWAP_NOT_FOUND: Sovereign swap ${swapId} not found for reservation ${reservationId}`);
+      }
+
+      // 6. verify swap.reservation_id matches reservationId
+      if (swapRow.reservation_id !== reservationId) {
+        throw new Error(
+          `SWAP_RESERVATION_MISMATCH: Sovereign swap ${swapId} has reservation_id ${swapRow.reservation_id ?? 'null'}, expected ${reservationId}`
+        );
+      }
+
+      // 7. update sovereign_swaps
       this.db
         .prepare(`
           UPDATE sovereign_swaps
@@ -2378,6 +2418,16 @@ export class SqlitePersistence {
           WHERE id = ?
         `)
         .run(now, swapId);
+
+      if (swapRow.state === 'EVM_FUNDING_PENDING') {
+        this.recordSovereignTransition(
+          swapId,
+          SovereignAtomicState.EVM_FUNDING_PENDING,
+          SovereignAtomicState.EVM_FUNDED,
+          'RESERVATION_COMMITTED_EVM_FUNDED_CONVERGED'
+        );
+      }
+
       this.db.exec('COMMIT');
     } catch (err) {
       try {

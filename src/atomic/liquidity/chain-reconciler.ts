@@ -498,7 +498,18 @@ export class ChainInventoryReconciler {
       // Status 1: LOCKED (active funded HTLC) -> ensure reservation committed and swap advanced
       if (status === 1) {
         if (swap.reservationId) {
-          this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+          try {
+            this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+          } catch (err: any) {
+            this.persistence.markSovereignRecoveryRequired(
+              swap.id,
+              `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is LOCKED but reservation commit failed (${err?.message ?? err}); economic inconsistency`,
+              'RESERVATION_COMMIT_FAILED'
+            );
+            throw new Error(
+              `ACTIVE_SWAP_RECONCILIATION_FAILED: Swap ${swap.id} reservation commit failed for locked HTLC: ${err?.message ?? err}`
+            );
+          }
         } else if (swap.state === SovereignAtomicState.EVM_FUNDING_PENDING) {
           this.persistence.updateSovereignSwap(swap.id, {
             state: SovereignAtomicState.EVM_FUNDED,
@@ -561,7 +572,18 @@ export class ChainInventoryReconciler {
           if (outcome.status === 'CONFIRMED') {
             if (swap && swap.reservationId) {
               if (swap.state === SovereignAtomicState.EVM_FUNDING_PENDING) {
-                this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+                try {
+                  this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+                } catch (err: any) {
+                  this.persistence.markSovereignRecoveryRequired(
+                    swap.id,
+                    `CRITICAL_INVARIANT_VIOLATION: Funding intent is CONFIRMED but reservation commit failed (${err?.message ?? err}); economic inconsistency`,
+                    'RESERVATION_COMMIT_FAILED'
+                  );
+                  throw new Error(
+                    `UNRESOLVED_INTENT_RECONCILIATION_FAILED: Swap ${swap.id} reservation commit failed for confirmed intent: ${err?.message ?? err}`
+                  );
+                }
               } else {
                 this.persistence.commitLiquidityReservation(swap.reservationId);
               }

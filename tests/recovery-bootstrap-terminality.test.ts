@@ -40,6 +40,8 @@ class ConfigurableLightning extends FakeLightningAtomicBackend {
   public states = new Map<string, HoldInvoiceState>();
   public cancelCalls: string[] = [];
   public cancelError: Error | null = null;
+  public settleError: Error | null = null;
+  public observeError: Error | null = null;
   public createCalls: string[] = [];
 
   setInvoiceState(hashLock: string, state: HoldInvoiceState) {
@@ -56,6 +58,13 @@ class ConfigurableLightning extends FakeLightningAtomicBackend {
     return super.createHoldInvoice(hashLock, amountSats, cltvExpiryBlocks, memo);
   }
 
+  override async settleHoldInvoice(preimage: string): Promise<{ settled: boolean; settledAt: Date }> {
+    if (this.settleError) {
+      throw this.settleError;
+    }
+    return super.settleHoldInvoice(preimage);
+  }
+
   override async cancelHoldInvoice(paymentHash: string): Promise<{ canceled: boolean; canceledAt: Date }> {
     const clean = paymentHash.replace(/^0x/, '').toLowerCase();
     this.cancelCalls.push(clean);
@@ -67,6 +76,9 @@ class ConfigurableLightning extends FakeLightningAtomicBackend {
   }
 
   override async observeHoldInvoice(paymentHash: string): Promise<HoldInvoice> {
+    if (this.observeError) {
+      throw this.observeError;
+    }
     const clean = paymentHash.replace(/^0x/, '').toLowerCase();
     const state = this.states.get(clean);
     if (!state) {
@@ -93,6 +105,23 @@ class ConfigurableLightning extends FakeLightningAtomicBackend {
 
 class ConfigurableEvm extends FakeEvmAtomicBackend {
   private htlcStates = new Map<string, EvmHtlcState>();
+  public fundError: Error | null = null;
+  public refundError: Error | null = null;
+  public observeError: Error | null = null;
+
+  override async fundHtlc(params: any): Promise<{ txHash: string; blockNumber: number; htlcId?: string }> {
+    if (this.fundError) {
+      throw this.fundError;
+    }
+    return super.fundHtlc(params);
+  }
+
+  override async refundHtlc(swapKey: string): Promise<{ txHash: string; blockNumber: number; refunded: boolean }> {
+    if (this.refundError) {
+      throw this.refundError;
+    }
+    return super.refundHtlc(swapKey);
+  }
 
   setHtlcState(swapKey: string, state: Partial<EvmHtlcState>) {
     this.htlcStates.set(swapKey, {
@@ -109,6 +138,9 @@ class ConfigurableEvm extends FakeEvmAtomicBackend {
   }
 
   override async observeHtlc(swapKey: string): Promise<EvmHtlcState> {
+    if (this.observeError) {
+      throw this.observeError;
+    }
     const overridden = this.htlcStates.get(swapKey);
     if (overridden) return overridden;
     return super.observeHtlc(swapKey);
@@ -2523,5 +2555,999 @@ describe('RECOVERY BOOTSTRAP & CROSS-RAIL TERMINALITY CLOSURE', () => {
       assert.strictEqual(res.amountSats, 5000n);
     });
   });
+
+  // =========================================================================
+  // SUITE 5: BLOCKER 1 — RECONCILIATION OBSERVATION VS MUTATION RETRY BUDGET
+  // =========================================================================
+  describe('Blocker 1: Read-Only / Authoritative Reconciliation Observation vs Mutation Retry Limits', () => {
+    function setupTestCoordinator(lightning: ConfigurableLightning, evm: ConfigurableEvm, maxReconciliationRetries = 3) {
+      const reconciler = new ChainInventoryReconciler({
+        persistence,
+        capacityProvider: evm,
+        defaultTokenAddress: token,
+        expectedChainId: 84532,
+        policy: BASE_SEPOLIA_TEST_POLICY,
+      });
+      const inventory = new SqliteLiquidityInventory(persistence, { reconciler });
+      const coordinator = new AtomicCoordinator(lightning, evm, inventory, {
+        persistence,
+        finalityPolicy: evm.finalityPolicy,
+        maxRetries: maxReconciliationRetries,
+      });
+      return { coordinator, inventory, reconciler };
+    }
+
+    it('5.1: INVOICE_CREATED + LN OPEN + Base NOT_FUNDED_PROVEN called maxRetries + 5 times does NOT consume retry budget and remains observable', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'obs-limit-1';
+      const hashLock = '0x' + 'b1'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'OPEN');
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-1',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.INVOICE_CREATED,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-1');
+
+      // Call reconcileSwap 8 times (maxRetries = 3)
+      for (let i = 0; i < 8; i++) {
+        const res = await coordinator.reconcileSwap(executionId);
+        assert.strictEqual(res.state, SovereignAtomicState.INVOICE_CREATED);
+        assert.strictEqual(res.recoveryRequired, false, `Pass ${i + 1} must not mark recoveryRequired`);
+        assert.strictEqual(res.retryCount ?? 0, 0, `Pass ${i + 1} must not increment retryCount`);
+      }
+
+      const inDb = persistence.getSovereignSwap(executionId)!;
+      assert.strictEqual(inDb.state, SovereignAtomicState.INVOICE_CREATED);
+      assert.strictEqual(inDb.recoveryRequired, false);
+      assert.strictEqual(inDb.retryCount, 0);
+    });
+
+    it('5.2: Same observed swap advances when LN becomes ACCEPTED on subsequent reconciliation', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'obs-limit-advance';
+      const hashLock = '0x' + 'b2'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'OPEN');
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-2',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.INVOICE_CREATED,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-2');
+
+      // 6 passive observations while OPEN
+      for (let i = 0; i < 6; i++) {
+        await coordinator.reconcileSwap(executionId);
+      }
+
+      // Now LN payment arrives -> ACCEPTED
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+
+      // Next reconcile observes ACCEPTED, transitions to LIGHTNING_HELD and funds EVM HTLC
+      const updated = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(updated.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(updated.recoveryRequired, false);
+      assert.ok(updated.evmHtlcId);
+    });
+
+    it('5.3: RECOVERY_REQUIRED from transient LN RPC failure can be observed indefinitely beyond maxRetries, recovers when LN heals', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'obs-ln-transient';
+      const hashLock = '0x' + 'b3'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-3',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.INVOICE_CREATED,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-3');
+
+      // LN has network failure
+      fakeLightning.observeError = new Error('LND connection timeout');
+
+      // Observe 7 times while LN is failing (maxRetries = 3)
+      for (let i = 0; i < 7; i++) {
+        const res = await coordinator.reconcileSwap(executionId);
+        assert.strictEqual(res.recoveryRequired, true);
+        assert.ok(res.failureReason?.includes('Authoritative cross-rail observation unavailable'));
+        assert.strictEqual(res.retryCount ?? 0, 0, 'Transient observation failure must not consume mutation retry budget');
+      }
+
+      // LN heals!
+      fakeLightning.observeError = null;
+      fakeLightning.setInvoiceState(hashLock, 'OPEN');
+
+      // Next reconcile should observe OPEN and clear recoveryRequired
+      const healed = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(healed.recoveryRequired, false);
+      assert.strictEqual(healed.failureReason, undefined);
+      assert.strictEqual(healed.state, SovereignAtomicState.INVOICE_CREATED);
+    });
+
+    it('5.4: RECOVERY_REQUIRED from transient Base RPC failure can be observed indefinitely beyond maxRetries, recovers when Base heals', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'obs-base-transient';
+      const hashLock = '0x' + 'b4'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'OPEN');
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-4',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.INVOICE_CREATED,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-4');
+
+      // Base has RPC error
+      fakeEvm.observeError = new Error('Base RPC 502 Bad Gateway');
+
+      for (let i = 0; i < 7; i++) {
+        const res = await coordinator.reconcileSwap(executionId);
+        assert.strictEqual(res.recoveryRequired, true);
+        assert.ok(res.failureReason?.includes('Authoritative cross-rail observation unavailable'));
+        assert.strictEqual(res.retryCount ?? 0, 0);
+      }
+
+      // Base heals!
+      fakeEvm.observeError = null;
+
+      const healed = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(healed.recoveryRequired, false);
+      assert.strictEqual(healed.failureReason, undefined);
+      assert.strictEqual(healed.state, SovereignAtomicState.INVOICE_CREATED);
+    });
+
+    it('5.5: EVM_FUNDED + Base LOCKED repeated restart reconciliation does not consume finite mutation budget', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'obs-evm-funded-locked';
+      const hashLock = '0x' + 'b5'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+        timelock: Math.floor(Date.now() / 1000) + 3600,
+        blockTimestamp: Math.floor(Date.now() / 1000),
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-5',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDED,
+        evmHtlcId: `0x_mock_${evmSwapKey}`,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'COMMITTED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-5');
+
+      // Reconcile 8 times
+      for (let i = 0; i < 8; i++) {
+        const res = await coordinator.reconcileSwap(executionId);
+        assert.strictEqual(res.state, SovereignAtomicState.EVM_FUNDED);
+        assert.strictEqual(res.recoveryRequired, false);
+        assert.strictEqual(res.retryCount ?? 0, 0);
+      }
+    });
+
+    it('5.6: Side-effecting mutation fundEvmHtlc strictly exhausts retry budget after maxRetries', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'mut-fund-fail';
+      const hashLock = '0x' + 'b6'.repeat(32);
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      fakeEvm.fundError = new Error('Base gas estimation failed / nonce stalled');
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-6',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.LIGHTNING_HELD,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${executionId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-6');
+
+      // Pass 1: attempts fundEvmHtlc, increments retryCount to 1, throws and catches
+      await coordinator.reconcileSwap(executionId);
+      let r1 = persistence.getSovereignSwap(executionId)!;
+      assert.strictEqual(r1.retryCount, 1);
+
+      // Simulate retry count reaching maxRetries (3) for LIGHTNING_HELD
+      persistence.updateSovereignSwap(executionId, { state: SovereignAtomicState.LIGHTNING_HELD, retryCount: 3 });
+
+      // Pass 2: retryCount (3) >= maxRetries (3) -> marks RECOVERY_REQUIRED with MAX_RETRIES_EXCEEDED
+      const r4 = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(r4.recoveryRequired, true);
+      assert.ok(r4.failureReason?.includes('retry limit (3) exceeded'));
+      const trans = persistence.getSovereignTransitions(executionId).slice(-1)[0];
+      assert.strictEqual(trans.reason, 'MAX_RETRIES_EXCEEDED');
+    });
+
+    it('5.7: Side-effecting mutation processRefund strictly exhausts retry budget after maxRetries', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'mut-refund-fail';
+      const hashLock = '0x' + 'b7'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+        timelock: 1000,
+        blockTimestamp: 2000, // Expired timelock!
+      });
+      fakeEvm.refundError = new Error('EVM refund broadcast failed');
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-7',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDED,
+        evmHtlcId: `0x_mock_${evmSwapKey}`,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'COMMITTED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-7');
+
+      // 3 attempts -> retryCount reaches 3
+      await coordinator.reconcileSwap(executionId);
+      await coordinator.reconcileSwap(executionId);
+      await coordinator.reconcileSwap(executionId);
+
+      // 4th pass: maxRetries exceeded
+      const res = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(res.recoveryRequired, true);
+      assert.ok(res.failureReason?.includes('retries (3) exceeded'));
+      const trans = persistence.getSovereignTransitions(executionId).slice(-1)[0];
+      assert.strictEqual(trans.reason, 'MAX_RETRIES_EXCEEDED');
+    });
+
+    it('5.8: Side-effecting mutation settleLightningFromEvmClaim strictly exhausts retry budget after maxRetries', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'mut-settle-fail';
+      const hashLock = '0x' + 'b8'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      fakeLightning.settleError = new Error('LND settle RPC unavailable');
+
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: true, // CLAIMED onchain
+        refunded: false,
+        balance: 20_000_000n,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-8',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDED,
+        evmHtlcId: `0x_mock_${evmSwapKey}`,
+        evmClaimTxHash: '0x' + '99'.repeat(32),
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'COMMITTED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-8');
+
+      // Pass 1: attempts settlement, increments retryCount to 1
+      await coordinator.reconcileSwap(executionId);
+      let r1 = persistence.getSovereignSwap(executionId)!;
+      assert.strictEqual(r1.retryCount, 1);
+
+      // Simulate retry count reaching maxRetries (3)
+      persistence.updateSovereignSwap(executionId, { retryCount: 3 });
+
+      // Next pass: maxRetries exceeded
+      const res = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(res.recoveryRequired, true);
+      assert.ok(res.failureReason?.includes('settle'));
+      const trans = persistence.getSovereignTransitions(executionId).slice(-1)[0];
+      assert.strictEqual(trans.reason, 'MAX_RETRIES_EXCEEDED');
+    });
+
+    it('5.9: Side-effecting mutation cancelHoldInvoice strictly exhausts retry budget after maxRetries', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      const { coordinator } = setupTestCoordinator(fakeLightning, fakeEvm, 3);
+
+      const executionId = 'mut-cancel-fail';
+      const hashLock = '0x' + 'b9'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+      const reservation = persistence.reserveLiquidity(executionId, token, 20_000_000n, {
+        allowLegacyFallback: true,
+      });
+
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      fakeLightning.cancelError = new Error('LND cancel RPC failed');
+
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: false,
+        completed: false,
+        refunded: true, // REFUNDED onchain
+        balance: 0n,
+      });
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'obs-limit-key-9',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDED,
+        evmHtlcId: `0x_mock_${evmSwapKey}`,
+        reservationId: reservation.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'COMMITTED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+      }, 'test-fp-obs-9');
+
+      // 3 attempts
+      await coordinator.reconcileSwap(executionId);
+      await coordinator.reconcileSwap(executionId);
+      await coordinator.reconcileSwap(executionId);
+
+      // 4th pass: maxRetries exceeded
+      const res = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(res.recoveryRequired, true);
+      assert.ok(res.failureReason?.includes('retries (3) exceeded') || res.failureReason?.includes('retry limit'));
+    });
+  });
+
+  // =========================================================================
+  // SUITE 6: BLOCKER 2 — FAIL-CLOSED ATOMIC commitReservationAndAdvanceSwapToFunded()
+  // =========================================================================
+  describe('Blocker 2: Fail-Closed Atomic commitReservationAndAdvanceSwapToFunded()', () => {
+    it('6.1: Healthy match commits reservation to COMMITTED and advances swap EVM_FUNDING_PENDING -> EVM_FUNDED', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-match-swap';
+      const hashLock = '0x' + 'c1'.repeat(32);
+      const res = persistence.reserveLiquidity(swapId, token, 25_000_000n, { allowLegacyFallback: true });
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-match-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 25_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 25_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-1');
+
+      // Execute atomic transaction
+      persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, swapId);
+
+      // Verify DB state
+      const updatedRes = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(updatedRes.status, 'COMMITTED');
+
+      const updatedSwap = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(updatedSwap.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(updatedSwap.reservationStatus, 'COMMITTED');
+      assert.strictEqual(updatedSwap.recoveryRequired, false);
+
+      // Verify audit entry exists
+      const audit = persistence.getSovereignTransitions(swapId);
+      assert.ok(audit.some(e => e.toState === SovereignAtomicState.EVM_FUNDED && e.reason === 'RESERVATION_COMMITTED_EVM_FUNDED_CONVERGED'));
+    });
+
+    it('6.2: Idempotent replay when reservation is already COMMITTED succeeds without error', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-idemp-swap';
+      const hashLock = '0x' + 'c2'.repeat(32);
+      const res = persistence.reserveLiquidity(swapId, token, 15_000_000n, { allowLegacyFallback: true });
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-idemp-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 15_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 15_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-2');
+
+      // First commit
+      persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, swapId);
+
+      // Replay commit
+      assert.doesNotThrow(() => {
+        persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, swapId);
+      });
+
+      const updatedRes = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(updatedRes.status, 'COMMITTED');
+      const updatedSwap = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(updatedSwap.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(updatedSwap.reservationStatus, 'COMMITTED');
+    });
+
+    it('6.3: Missing reservation throws RESERVATION_NOT_FOUND and leaves swap unchanged', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-missing-res-swap';
+      const hashLock = '0x' + 'c3'.repeat(32);
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-missing-res-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 15_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: 'non-existent-res',
+        reservedAmountUnits: 15_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-3');
+
+      assert.throws(
+        () => persistence.commitReservationAndAdvanceSwapToFunded('non-existent-res', swapId),
+        /RESERVATION_NOT_FOUND/
+      );
+
+      const swap = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(swap.state, SovereignAtomicState.EVM_FUNDING_PENDING);
+    });
+
+    it('6.4: Released reservation throws INVALID_RESERVATION_STATUS, keeps reservation RELEASED, leaves swap unchanged', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-released-swap';
+      const hashLock = '0x' + 'c4'.repeat(32);
+      const res = persistence.reserveLiquidity(swapId, token, 15_000_000n, { allowLegacyFallback: true });
+      persistence.releaseLiquidityReservation(res.reservationId);
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-released-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 15_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 15_000_000n,
+        reservationStatus: 'RELEASED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-4');
+
+      assert.throws(
+        () => persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, swapId),
+        /INVALID_RESERVATION_STATUS.*RELEASED/
+      );
+
+      // Verify no silent resurrection!
+      const resInDb = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(resInDb.status, 'RELEASED');
+
+      const swapInDb = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(swapInDb.state, SovereignAtomicState.EVM_FUNDING_PENDING);
+    });
+
+    it('6.5: Settled reservation throws INVALID_RESERVATION_STATUS and leaves swap unchanged', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-settled-swap';
+      const hashLock = '0x' + 'c5'.repeat(32);
+      const res = persistence.reserveLiquidity(swapId, token, 15_000_000n, { allowLegacyFallback: true });
+      // Settle reservation
+      persistence.settleLiquidityReservation(res.reservationId);
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-settled-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 15_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 15_000_000n,
+        reservationStatus: 'SETTLED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-5');
+
+      assert.throws(
+        () => persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, swapId),
+        /INVALID_RESERVATION_STATUS.*SETTLED/
+      );
+
+      const resInDb = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(resInDb.status, 'SETTLED');
+
+      const swapInDb = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(swapInDb.state, SovereignAtomicState.EVM_FUNDING_PENDING);
+    });
+
+    it('6.6: Reservation owned by different swap throws RESERVATION_OWNER_MISMATCH and mutates neither', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-owner-swap-1';
+      const otherSwapId = 'commit-owner-swap-other';
+      const hashLock = '0x' + 'c6'.repeat(32);
+      const res = persistence.reserveLiquidity(otherSwapId, token, 15_000_000n, { allowLegacyFallback: true });
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-owner-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 15_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 15_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-6');
+
+      assert.throws(
+        () => persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, swapId),
+        /RESERVATION_OWNER_MISMATCH/
+      );
+
+      const resInDb = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(resInDb.status, 'RESERVED');
+      assert.strictEqual(resInDb.executionId, otherSwapId);
+
+      const swapInDb = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(swapInDb.state, SovereignAtomicState.EVM_FUNDING_PENDING);
+    });
+
+    it('6.7: Swap with mismatched reservation_id throws SWAP_RESERVATION_MISMATCH and rolls back', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'commit-swap-res-mismatch';
+      const hashLock = '0x' + 'c7'.repeat(32);
+      const res1 = persistence.reserveLiquidity(swapId, token, 15_000_000n, { allowLegacyFallback: true });
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'commit-swap-res-mismatch-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 15_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        reservationId: randomUUID(), // Deliberately mismatched UUID!
+        reservedAmountUnits: 15_000_000n,
+        reservationStatus: 'RESERVED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey: `swap_${swapId}`,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-7');
+
+      // Calling with res1, which does not match swap.reservation_id
+      assert.throws(
+        () => persistence.commitReservationAndAdvanceSwapToFunded(res1.reservationId, swapId),
+        /SWAP_RESERVATION_MISMATCH/
+      );
+
+      // Verify transaction rollback: res1 must remain RESERVED!
+      const res1InDb = persistence.getLiquidityReservation(res1.reservationId)!;
+      assert.strictEqual(res1InDb.status, 'RESERVED', 'res1 must remain RESERVED due to rollback');
+
+      const swapInDb = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(swapInDb.state, SovereignAtomicState.EVM_FUNDING_PENDING);
+    });
+
+    it('6.8: Missing swap throws SOVEREIGN_SWAP_NOT_FOUND and rolls back reservation', () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const res = persistence.reserveLiquidity('missing-swap-id', token, 15_000_000n, { allowLegacyFallback: true });
+
+      assert.throws(
+        () => persistence.commitReservationAndAdvanceSwapToFunded(res.reservationId, 'missing-swap-id'),
+        /SOVEREIGN_SWAP_NOT_FOUND/
+      );
+
+      const resInDb = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(resInDb.status, 'RESERVED', 'Reservation must remain RESERVED due to rollback');
+    });
+
+    it('6.9: Chain Reconciler: Onchain LOCKED HTLC with locally RELEASED reservation throws and marks RECOVERY_REQUIRED', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const swapId = 'reconciler-released-res-swap';
+      const hashLock = '0x' + 'c9'.repeat(32);
+      const evmSwapKey = `swap_${swapId}`;
+      const res = persistence.reserveLiquidity(swapId, token, 20_000_000n, { allowLegacyFallback: true });
+      persistence.releaseLiquidityReservation(res.reservationId);
+
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+      });
+
+      persistence.createSovereignSwap({
+        id: swapId,
+        idempotencyKey: 'reconciler-released-idemp',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        evmHtlcId: `0x_mock_${evmSwapKey}`,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RELEASED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, 'fp-commit-9');
+
+      // Create durable intent in CONFIRMED state
+      const intent = persistence.getOrCreateEvmIntent({
+        swapKey: evmSwapKey,
+        chainId: 84532,
+        signerAddress: operator as `0x${string}`,
+        actionType: 'FUND',
+        targetAddress: '0x1111111111111111111111111111111111111111',
+        calldata: '0x',
+      });
+      persistence.markEvmIntentConfirmedByChainEvidence(intent.id, ('0x' + '11'.repeat(32)) as `0x${string}`);
+
+      const reconciler = new ChainInventoryReconciler({
+        persistence,
+        capacityProvider: fakeEvm,
+        defaultTokenAddress: token,
+        expectedChainId: 84532,
+        policy: BASE_SEPOLIA_TEST_POLICY,
+      });
+
+      const result = await reconciler.reconcileOnBoot(token);
+      assert.strictEqual(result.readinessState, 'UNKNOWN');
+      assert.ok(result.error?.includes('RESERVATION_COMMIT_FAILED') || result.error?.includes('INVALID_RESERVATION_STATUS'));
+
+      // The swap is marked RECOVERY_REQUIRED
+      const swapInDb = persistence.getSovereignSwap(swapId)!;
+      assert.strictEqual(swapInDb.recoveryRequired, true);
+      assert.ok(swapInDb.failureReason?.includes('reservation commit failed') || swapInDb.failureReason?.includes('INVALID_RESERVATION_STATUS'));
+      const trans = persistence.getSovereignTransitions(swapId).slice(-1)[0];
+      assert.strictEqual(trans.reason, 'RESERVATION_COMMIT_FAILED');
+
+      // The reservation is STILL RELEASED (never silently resurrected to COMMITTED)
+      const resInDb = persistence.getLiquidityReservation(res.reservationId)!;
+      assert.strictEqual(resInDb.status, 'RELEASED');
+    });
+  });
+
+  // =========================================================================
+  // SUITE 7: COMBINED INTERACTION TEST
+  // =========================================================================
+  describe('Combined Interaction: Invariant Recovery Resumes Observation Past Mutation Budget', () => {
+    it('7.1: Reservation failure marks RECOVERY_REQUIRED; after operator data correction, reconciliation succeeds past maxRetries without being blocked', async () => {
+      persistence.setConfirmedOperatorBalance(token, 100_000_000n);
+      const fakeLightning = new ConfigurableLightning();
+      const fakeEvm = new ConfigurableEvm();
+      fakeEvm.setWalletBalance(token, 100_000_000n);
+
+      const reconciler = new ChainInventoryReconciler({
+        persistence,
+        capacityProvider: fakeEvm,
+        defaultTokenAddress: token,
+        expectedChainId: 84532,
+        policy: BASE_SEPOLIA_TEST_POLICY,
+      });
+      const inventory = new SqliteLiquidityInventory(persistence, { reconciler });
+      const coordinator = new AtomicCoordinator(fakeLightning, fakeEvm, inventory, {
+        persistence,
+        finalityPolicy: fakeEvm.finalityPolicy,
+        maxRetries: 3,
+      });
+
+      const executionId = 'combined-recovery-test';
+      const hashLock = '0x' + 'd1'.repeat(32);
+      const evmSwapKey = `swap_${executionId}`;
+
+      fakeLightning.setInvoiceState(hashLock, 'ACCEPTED');
+      fakeEvm.setHtlcState(evmSwapKey, {
+        funded: true,
+        completed: false,
+        refunded: false,
+        balance: 20_000_000n,
+        timelock: Math.floor(Date.now() / 1000) + 3600,
+        blockTimestamp: Math.floor(Date.now() / 1000),
+      });
+
+      // Create a reservation that is incorrectly RELEASED
+      const res = persistence.reserveLiquidity(executionId, token, 20_000_000n, { allowLegacyFallback: true });
+      persistence.releaseLiquidityReservation(res.reservationId);
+
+      persistence.createSovereignSwap({
+        id: executionId,
+        idempotencyKey: 'combined-idemp-1',
+        hashLock,
+        claimingAddress: operator,
+        targetDestinationAddress: operator,
+        amountSats: 10_000n,
+        expectedUsdcAmount: 20_000_000n,
+        state: SovereignAtomicState.EVM_FUNDING_PENDING,
+        evmHtlcId: `0x_mock_${evmSwapKey}`,
+        reservationId: res.reservationId,
+        reservedAmountUnits: 20_000_000n,
+        reservationStatus: 'RELEASED',
+        tokenAddress: token,
+        refundAddress: operator,
+        evmSwapKey,
+        cltvExpiryBlocks: 144,
+        timelockSeconds: 3600,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 10, // Pre-exhausted beyond maxRetries = 3!
+        recoveryRequired: true,
+        failureReason: 'RESERVATION_COMMIT_FAILED',
+      }, 'test-fp-comb-1');
+
+      // Attempt reconcile: fails because reservation is RELEASED
+      const r1 = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(r1.recoveryRequired, true);
+      assert.ok(r1.failureReason?.includes('reservation commit failed') || r1.failureReason?.includes('INVALID_RESERVATION_STATUS'));
+
+      // Now operator fixes the data: updates reservation status to RESERVED so commit can proceed
+      (persistence as any).db.prepare('UPDATE liquidity_reservations SET status = ? WHERE id = ?').run('RESERVED', res.reservationId);
+
+      // Reconcile again: Even though retryCount = 10 (exceeds maxRetries = 3),
+      // read-only observation and commit succeed without being blocked by retry limit!
+      const r2 = await coordinator.reconcileSwap(executionId);
+      assert.strictEqual(r2.state, SovereignAtomicState.EVM_FUNDED);
+      assert.strictEqual(r2.reservationStatus, 'COMMITTED');
+      assert.strictEqual(r2.recoveryRequired, false);
+      assert.strictEqual(r2.failureReason, undefined);
+    });
+  });
 });
+
 
