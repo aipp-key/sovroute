@@ -1,18 +1,19 @@
 # SovRoute — Canonical Project State
 
 ```
-Status: ACTIVE DEVELOPMENT (CANDIDATE APPLICATION BASELINE IMPLEMENTED)
+Status: ACTIVE DEVELOPMENT (FAIL-CLOSED HARDENING CANDIDATE APPLICATION BASELINE)
 Canonical Document: YES (Living Project Memory & Master State)
-Last Verified: 2026-09-05T16:15:00+03:00
-Last Updated: 2026-09-05T16:15:00+03:00
+Last Verified: 2026-09-05T17:55:00+03:00
+Last Updated: 2026-09-05T17:55:00+03:00
 Canonical Domain: https://sovroute.com
 Historical Frozen Router V1 Application Baseline: 357c5ab85344a2fa5602a5e376efc7ea80685498
 Canonical SovRoute Application Baseline (Post-Liquidity): 906e5d1720ccd00b89a3f00778c1c302d4fe1da9
-Candidate Application Baseline Branch: phase-base-inventory-reconciliation-implementation
-Repository HEAD: Candidate implementation on dedicated branch
-Current Phase: Base USDC Inventory Reconciliation & Startup Safety Complete (Candidate Application Baseline)
+Previous Failed Candidate Commit: d3cd288073a8d3cdf6619d692cd8fb9e2cf048c9
+Current Hardening Candidate Branch: phase-base-inventory-final-fail-closed-hardening
+Repository HEAD: Hardened fail-closed candidate implementation on dedicated branch
+Current Phase: Base USDC Inventory Reconciliation — Final Fail-Closed Hardening (FF-1 through FF-10 Certified)
 Current Blocker: Independent review & explicit owner approval before merge; Bitcoin Core IBD in Progress
-Next Safe Action: Independent review of candidate baseline; allow Bitcoin Core IBD to finish uninterrupted
+Next Safe Action: Independent review of fail-closed candidate; allow Bitcoin Core IBD to finish uninterrupted
 Production Funds: ZERO (0 real BTC, 0 USDC, 0 Base mainnet transactions)
 ```
 
@@ -710,6 +711,53 @@ If `aliasdesk-server` is destroyed or lost, execute this recovery sequence:
   - AIPP: All 5 containers undisturbed with `Restarts=0`.
   - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
 - **Result**: **PASS — BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY CANDIDATE BASELINE CERTIFIED**.
+
+### 2026-09-05 17:55 +03:00 (Base USDC Inventory Reconciliation — Final Fail-Closed Hardening)
+- **Session Objective**: Address and resolve independent code review findings FF-1 through FF-10 identified in previous candidate commit `d3cd288073a8d3cdf6619d692cd8fb9e2cf048c9`. Establish a hardened candidate branch `phase-base-inventory-final-fail-closed-hardening` without mutating canonical application baseline `906e5d1720ccd00b89a3f00778c1c302d4fe1da9`.
+- **Review Finding Remediations (FF-1 through FF-10)**:
+  - **FF-1 (Typed Reconcile-on-Boot Contract & Persistence Matching)**:
+    - Updated `src/bootstrap.ts` Step 2 & Step 3.5 to mandate `IReconciledLiquidityInventory` with `reconcileOnBoot`.
+    - If `inventory instanceof SqliteLiquidityInventory`, verifies that its underlying persistence matches the bootstrap persistence instance (`INVENTORY_PERSISTENCE_MISMATCH`).
+    - Executes `reconcileOnBoot()` and asserts `readinessState === 'READY'` before initializing network backends (LND, EVM) or creating the coordinator.
+  - **FF-2 (Finality Observation Failure Fail-Closed Semantics)**:
+    - Updated `src/atomic/evm/base-sepolia-backend.ts` so that when both finalized block tag query and historical block query fail, it throws `FINALITY_OBSERVATION_FAILED`. Never returns latest unfinalized balance as finalized.
+  - **FF-3 (Active Swap Reconciliation Error Propagation)**:
+    - Updated `src/atomic/liquidity/chain-reconciler.ts` in `reconcileActiveSwaps` to throw `ACTIVE_SWAP_RECONCILIATION_FAILED` on RPC errors instead of silently catching/swallowing.
+  - **FF-4 (Funding Intent Accounting Safety)**:
+    - In `src/persistence/sqlite.ts`, removed the silent `catch { return 0n; }` inside `getUnresolvedFundingIntentsAmountInternal`. Query errors now rethrow under `BEGIN IMMEDIATE` and abort reservations fail-closed (`EvmInventoryUnavailableError`).
+  - **FF-5 (Absence of Chain Snapshot Rejection)**:
+    - In `src/persistence/sqlite.ts`, `reserveLiquidity` now rejects reservations if no chain inventory snapshot exists in SQLite (`InventoryNotReadyError`). Production swaps can NEVER be authorized by legacy un-reconciled `confirmed_balance`. (Legacy fallback is isolated to tests via `enableLegacyFallbackForTesting()`).
+  - **FF-6 (Transactional Snapshot Freshness Verification)**:
+    - In `src/persistence/sqlite.ts`, `reserveLiquidity` transactionally verifies inside `BEGIN IMMEDIATE` that the snapshot's `freshUntil` timestamp has not expired. If expired, it marks the snapshot `DEGRADED` in SQLite and throws `EvmInventoryUnavailableError`.
+  - **FF-7 (Phase 3.5 Funding Intent Active Startup Reconciliation)**:
+    - Added `reconcileUnresolvedFundingIntents` (Phase 3.5) in `ChainInventoryReconciler` to inspect on-chain contract HTLC status for unresolved funding intents and transition mined intents to `COMMITTED` before opening the router to traffic.
+  - **FF-8 (Canonical Base Sepolia USDC Address Verification)**:
+    - In `src/atomic/evm/base-sepolia-backend.ts` and `src/atomic/evm/fake-backend.ts`, `verifyChainAndToken` strictly checks equality against `OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS` (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`), rejecting arbitrary, test, or counterfeit tokens fail-closed.
+  - **FF-9 (Base Sepolia Chain ID 84532 Semantics)**:
+    - Default chain ID in `FakeEvmAtomicBackend` updated to `84532` (Base Sepolia), eliminating stale Arbitrum or mock chain defaults.
+  - **FF-10 (Policy vs. Invariant Boundary)**:
+    - Separated mathematical safe headroom invariants from network-specific policies (`BASE_SEPOLIA_TEST_POLICY`), preventing hardcoded magic numbers.
+- **Verification & Test Suites**:
+  - `tests/inventory-fail-closed-hardening.test.ts`: 16/16 tests passing across all FF findings.
+  - `tests/inventory-stale-snapshot-cross-process.test.ts`: 5-process OS concurrency test certifying that expired snapshots fail closed and refresh correctly (all 5 fail closed, snapshot marked DEGRADED, refreshed snapshot enables exactly 3 reservations up to headroom limit).
+  - `tests/production-bootstrap-safety.test.ts`: 6/6 tests passing on production bootstrap fail-closed gates.
+  - `tests/liquidity-accounting-safety.test.ts`: 21/21 passing.
+  - `tests/inventory-reconciliation-safety.test.ts`: 40/40 passing.
+  - `tests/inventory-cross-process.test.ts`: 2/2 passing.
+  - `npm test` (Unit Runner): 245/245 tests passing across 45 suites with 0 failures!
+  - `npm run coordinator:test`: 51/51 tests passing.
+  - `npm run phase6:test`: 130/130 tests passing.
+  - `npm run typecheck`: 0 errors.
+  - `python tests/scan-secrets.py`: Clean (0 secrets).
+- **Candidate Baseline Status**:
+  - Pinned Dedicated Branch: `phase-base-inventory-final-fail-closed-hardening`.
+  - Canonical Application Baseline: Remains `906e5d1720ccd00b89a3f00778c1c302d4fe1da9`.
+  - Dedicated candidate branch will NOT be merged without explicit owner approval.
+  - Production server (`aliasdesk-server`): ZERO mutation (untouched).
+  - Bitcoin Core: Running IBD uninterrupted; no restart, no shutdown.
+  - AIPP: All 5 containers undisturbed with `Restarts=0`.
+  - Real Funds: ZERO (0 BTC, 0 USDC, 0 Base mainnet transactions).
+- **Result**: **PASS — FAIL-CLOSED HARDENING OF BASE INVENTORY RECONCILIATION COMPLETE**.
 
 ---
 *End of Canonical Master Project State Document.*

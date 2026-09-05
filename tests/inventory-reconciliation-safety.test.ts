@@ -47,8 +47,9 @@ import {
   EvmInventoryUnavailableError,
   SovereignAtomicState,
 } from '../src/atomic/types.ts';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../src/atomic/evm/base-guard.ts';
 
-const defaultToken = '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40';
+const defaultToken = OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase();
 const operatorAddress = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 
 describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)', () => {
@@ -82,7 +83,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const bootRes = await reconciler.reconcileOnBoot();
@@ -104,7 +105,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -133,7 +134,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const boot = await reconciler.reconcileOnBoot();
@@ -156,7 +157,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
         policy: { maxFreshnessMs: 50 }, // 50ms freshness limit
       });
       await reconciler.reconcileOnBoot();
@@ -178,7 +179,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       assert.equal(reconciler.getReadinessState(defaultToken), 'NOT_READY');
@@ -190,7 +191,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const boot = await reconciler.reconcileOnBoot();
@@ -209,7 +210,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const r1 = await reconciler.reconcileOnBoot();
@@ -231,7 +232,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const boot = await reconciler.reconcileOnBoot();
@@ -248,7 +249,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const boot = await reconciler.reconcileOnBoot();
@@ -280,7 +281,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const boot = await reconciler.reconcileOnBoot();
@@ -299,7 +300,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -320,7 +321,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
       const res = persistence.reserveLiquidity('exec-def-2', defaultToken, 80_000_000n);
@@ -359,7 +360,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
       const res = persistence.reserveLiquidity('exec-recov-1', defaultToken, 80_000_000n);
@@ -389,7 +390,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -414,7 +415,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       persistence.getOrCreateEvmIntent({
         swapKey,
         actionType: 'FUND',
-        chainId: 42161,
+        chainId: 84532,
         signerAddress: operatorAddress as `0x${string}`,
         targetAddress: defaultToken as `0x${string}`,
         calldata: '0x',
@@ -509,7 +510,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: throwingProvider as any,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       const res = await reconciler.reconcileOnBoot();
@@ -528,7 +529,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -554,6 +555,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 18.1: Onchain refund detection restores headroom via Phase 4 reconciliation', async () => {
       fakeEvm.setWalletBalance(defaultToken, 50_000_000n, 50_000_000n);
       persistence.setConfirmedOperatorBalance(defaultToken, 50_000_000n);
+      persistence.enableLegacyFallbackForTesting();
       const htlcId = '0x' + '9'.repeat(64);
       const swapKey = '0x' + '8'.repeat(64);
 
@@ -589,7 +591,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
 
       await reconciler.reconcileOnBoot();
@@ -631,7 +633,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -657,7 +659,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       const inventory = new SqliteLiquidityInventory(persistence, { reconciler });
       await assert.rejects(
@@ -672,7 +674,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       const boot = await reconciler.reconcileOnBoot();
       assert.equal(boot.headroom, 0n);
@@ -685,7 +687,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       const res = await reconciler.reconcileOnBoot();
       assert.equal(res.readinessState, 'NOT_READY');
@@ -698,7 +700,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
         policy: { maxFreshnessMs: 40 },
       });
       await reconciler.reconcileOnBoot();
@@ -716,7 +718,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
         policy: { maxFreshnessMs: 30 },
       });
       await reconciler.reconcileOnBoot();
@@ -750,7 +752,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -773,7 +775,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       persistence.getOrCreateEvmIntent({
         swapKey: swapKey1,
         actionType: 'FUND',
-        chainId: 42161,
+        chainId: 84532,
         signerAddress: operatorAddress as `0x${string}`,
         targetAddress: defaultToken as `0x${string}`,
         calldata: '0x',
@@ -798,7 +800,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       persistence.getOrCreateEvmIntent({
         swapKey: swapKey2,
         actionType: 'FUND',
-        chainId: 42161,
+        chainId: 84532,
         signerAddress: operatorAddress as `0x${string}`,
         targetAddress: defaultToken as `0x${string}`,
         calldata: '0x',
@@ -817,7 +819,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -825,7 +827,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
       const intent = persistence.getOrCreateEvmIntent({
         swapKey,
         actionType: 'FUND',
-        chainId: 42161,
+        chainId: 84532,
         signerAddress: operatorAddress as `0x${string}`,
         targetAddress: defaultToken as `0x${string}`,
         calldata: '0x',
@@ -869,6 +871,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 32: Expired HTLC does not prematurely release reservation before onchain refund', async () => {
       fakeEvm.setWalletBalance(defaultToken, 50_000_000n, 50_000_000n);
       persistence.setConfirmedOperatorBalance(defaultToken, 50_000_000n);
+      persistence.enableLegacyFallbackForTesting();
 
       const res = persistence.reserveLiquidity('exec-hold-refund', defaultToken, 20_000_000n);
       persistence.commitLiquidityReservation(res.reservationId);
@@ -899,7 +902,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
         persistence,
         capacityProvider: fakeEvm,
         defaultTokenAddress: defaultToken,
-        expectedChainId: 42161,
+        expectedChainId: 84532,
       });
       await reconciler.reconcileOnBoot();
 
@@ -910,6 +913,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 33: Idempotent reservation returns existing reservation without double-counting', () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
       persistence.setConfirmedOperatorBalance(defaultToken, 100_000_000n);
+      persistence.enableLegacyFallbackForTesting();
 
       const r1 = persistence.reserveLiquidity('exec-idem-dup', defaultToken, 30_000_000n);
       assert.equal(r1.reserved, true);
@@ -937,6 +941,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 36: Double-commit on already committed reservation is safely idempotent', () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
       persistence.setConfirmedOperatorBalance(defaultToken, 100_000_000n);
+      persistence.enableLegacyFallbackForTesting();
       const res = persistence.reserveLiquidity('exec-double-commit', defaultToken, 20_000_000n);
       persistence.commitLiquidityReservation(res.reservationId);
       assert.doesNotThrow(() => {
@@ -949,6 +954,7 @@ describe('BASE USDC INVENTORY RECONCILIATION & STARTUP SAFETY (REC-1 to REC-20)'
     it('Scenario 37: Double-settle on already settled reservation is safely idempotent', () => {
       fakeEvm.setWalletBalance(defaultToken, 100_000_000n, 100_000_000n);
       persistence.setConfirmedOperatorBalance(defaultToken, 100_000_000n);
+      persistence.enableLegacyFallbackForTesting();
       const res = persistence.reserveLiquidity('exec-double-settle', defaultToken, 20_000_000n);
       persistence.commitLiquidityReservation(res.reservationId);
       persistence.settleLiquidityReservation(res.reservationId);

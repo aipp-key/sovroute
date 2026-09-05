@@ -29,16 +29,18 @@ import { BaseSepoliaAtomicBackend } from './atomic/evm/base-sepolia-backend.ts';
 import type {
   ILightningAtomicBackend,
   IEvmAtomicBackend,
-  ILiquidityInventory,
+  IReconciledLiquidityInventory,
 } from './atomic/types.ts';
+import { SqliteLiquidityInventory } from './atomic/liquidity/sqlite-inventory.ts';
 import { BASE_SEPOLIA_CHAIN_ID } from './atomic/evm/base-guard.ts';
 
 export interface ProductionBootstrapOptions {
   /**
    * Explicit liquidity inventory instance provided by deployment layer.
    * REQUIRED: The production router never fabricates artificial liquidity balances.
+   * Must implement IReconciledLiquidityInventory for fail-closed on-chain boot reconciliation (FF-1).
    */
-  readonly inventory: ILiquidityInventory;
+  readonly inventory: IReconciledLiquidityInventory;
   readonly workerId?: string | undefined;
 }
 
@@ -47,7 +49,7 @@ export interface ProductionBootstrapResult {
   readonly persistence: SqlitePersistence;
   readonly lightningBackend: ILightningAtomicBackend;
   readonly evmBackend: IEvmAtomicBackend;
-  readonly inventory: ILiquidityInventory;
+  readonly inventory: IReconciledLiquidityInventory;
   readonly coordinator: AtomicCoordinator;
   readonly healthService: HealthService;
 }
@@ -75,12 +77,17 @@ export async function bootstrapProductionRouter(
   const validatedConfig = ProductionConfigValidator.validate(rawConfig);
 
   // =========================================================================
-  // STEP 2: REQUIRE EXPLICIT INVENTORY (FAIL-CLOSED: NO SILENT FAKE DEFAULT)
+  // STEP 2: REQUIRE EXPLICIT RECONCILED INVENTORY (FAIL-CLOSED: NO SILENT FAKE DEFAULT)
   // =========================================================================
   if (!options || !options.inventory) {
     throw new MissingInventoryError(
-      'Production bootstrap requires an explicit ILiquidityInventory instance. ' +
+      'Production bootstrap requires an explicit IReconciledLiquidityInventory instance. ' +
       'Silent fabrication of liquidity balances is strictly prohibited in production profile.'
+    );
+  }
+  if (typeof options.inventory.reconcileOnBoot !== 'function') {
+    throw new MissingInventoryError(
+      'Production bootstrap requires an IReconciledLiquidityInventory instance with a reconcileOnBoot method.'
     );
   }
 
@@ -92,6 +99,26 @@ export async function bootstrapProductionRouter(
   if (!check || check.length === 0 || check[0].integrity_check !== 'ok') {
     persistence.close();
     throw new Error(`DATABASE_INTEGRITY_FAILURE: Active database failed integrity_check: ${JSON.stringify(check)}`);
+  }
+
+  // =========================================================================
+  // STEP 3.5: BASE ONCHAIN INVENTORY RECONCILIATION ON BOOT (REC-4, REC-5, FF-1)
+  // =========================================================================
+  if (options.inventory instanceof SqliteLiquidityInventory) {
+    if (options.inventory.getPersistence() !== persistence) {
+      persistence.close();
+      throw new Error(
+        'INVENTORY_PERSISTENCE_MISMATCH: Provided inventory persistence instance does not match bootstrap persistence.'
+      );
+    }
+  }
+
+  const bootResult = await options.inventory.reconcileOnBoot();
+  if (bootResult.readinessState !== 'READY') {
+    persistence.close();
+    throw new Error(
+      `INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is ${bootResult.readinessState}, expected READY (error: ${bootResult.error ?? 'none'})`
+    );
   }
 
   // =========================================================================
@@ -167,18 +194,6 @@ export async function bootstrapProductionRouter(
       }
     },
   });
-
-  // =========================================================================
-  // STEP 6.5: BASE ONCHAIN INVENTORY RECONCILIATION ON BOOT (REC-4, REC-5)
-  // =========================================================================
-  if (typeof (options.inventory as any).reconcileOnBoot === 'function') {
-    const bootResult = await (options.inventory as any).reconcileOnBoot();
-    if (bootResult.readinessState !== 'READY') {
-      throw new Error(
-        `INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is ${bootResult.readinessState}, expected READY`
-      );
-    }
-  }
 
   // =========================================================================
   // STEP 7: WIRE ATOMIC COORDINATOR WITH VALIDATED POLICIES

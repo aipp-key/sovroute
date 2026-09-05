@@ -7,6 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from './base-guard.ts';
 import type {
   IEvmAtomicBackend,
   EvmHtlcParams,
@@ -30,7 +31,7 @@ interface StoredHtlc {
 
 export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityProvider {
   readonly backendName = 'FakeEvmAtomicBackend';
-  readonly chainId = 42161; // Arbitrum One / Base Sepolia test mock
+  readonly chainId: number = 84532; // Canonical Base Sepolia test semantics (FF-9)
   public finalityPolicy?: { policyTag: string; requiredConfirmations: number } | undefined = {
     policyTag: 'BASE_SEPOLIA_TEST_POLICY',
     requiredConfirmations: 2,
@@ -49,7 +50,21 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityPr
   private persistence?: any;
   private chainValid = true;
   private tokenValid = true;
+  public enforceExactCanonicalToken = true;
   private verificationFailureReason?: string | undefined;
+
+  constructor(config?: { chainId?: number; enforceExactCanonicalToken?: boolean; persistence?: any }) {
+    if (config?.chainId !== undefined) {
+      this.chainId = config.chainId;
+    }
+    if (config?.enforceExactCanonicalToken !== undefined) {
+      this.enforceExactCanonicalToken = config.enforceExactCanonicalToken;
+    }
+    if (config?.persistence) {
+      this.persistence = config.persistence;
+      this.rehydrateBindings();
+    }
+  }
 
   public setWalletBalance(tokenAddress: string, latest: bigint, finalized?: bigint): void {
     const token = tokenAddress.toLowerCase();
@@ -71,6 +86,10 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityPr
 
   public setPersistence(persistence: any): void {
     this.persistence = persistence;
+  }
+
+  public getTokenAddress(): string {
+    return OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS;
   }
 
   public rehydrateBindings(): number {
@@ -116,6 +135,13 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityPr
       return {
         valid: false,
         reason: this.verificationFailureReason ?? `WRONG_CHAIN_ID: expected ${expectedChainId}, got ${this.chainId}`,
+      };
+    }
+    const token = tokenAddress.toLowerCase();
+    if (this.enforceExactCanonicalToken && token !== OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase()) {
+      return {
+        valid: false,
+        reason: this.verificationFailureReason ?? `TOKEN_CONTRACT_MISMATCH: Token ${tokenAddress} is not canonical Base Sepolia USDC ${OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS}`,
       };
     }
     if (!this.tokenValid) {
@@ -204,6 +230,28 @@ export class FakeEvmAtomicBackend implements IEvmAtomicBackend, IChainCapacityPr
       timelock: htlc.params.refundLocktime,
       blockTimestamp: this.currentBlockTimestamp,
     };
+  }
+
+  public async getContractHtlcState(htlcId: string): Promise<{ status: number; amount: bigint } | null> {
+    const swapKey = this.htlcIdToSwapKey.get(htlcId);
+    if (!swapKey) {
+      for (const [key, stored] of this.htlcs.entries()) {
+        const computedId = this.swapKeyToHtlcId.get(key) ?? `0x${createHash('sha256').update(key).digest('hex')}`;
+        if (computedId === htlcId) {
+          if (stored.completed) return { status: 2, amount: stored.balance };
+          if (stored.refunded) return { status: 3, amount: stored.balance };
+          if (stored.funded) return { status: 1, amount: stored.balance };
+          return { status: 0, amount: 0n };
+        }
+      }
+      return null;
+    }
+    const htlc = this.htlcs.get(swapKey);
+    if (!htlc) return null;
+    if (htlc.completed) return { status: 2, amount: htlc.balance };
+    if (htlc.refunded) return { status: 3, amount: htlc.balance };
+    if (htlc.funded) return { status: 1, amount: htlc.balance };
+    return { status: 0, amount: 0n };
   }
 
   async claimHtlc(params: {

@@ -223,7 +223,7 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
 
     // 2. Observe finalized / safe balance
     const finalizedBlockNumber = Math.max(0, latestBlockNumber - this.requiredConfirmations);
-    let walletBalanceFinalized = walletBalanceLatest;
+    let walletBalanceFinalized: bigint;
 
     try {
       walletBalanceFinalized = (await this.publicClient.readContract({
@@ -242,8 +242,10 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
           args: [operator],
           blockNumber: BigInt(finalizedBlockNumber),
         })) as bigint;
-      } catch {
-        walletBalanceFinalized = walletBalanceLatest;
+      } catch (historicalErr: any) {
+        throw new Error(
+          `FINALITY_OBSERVATION_FAILED: Failed to read finalized balance from RPC at blockTag finalized and historical block ${finalizedBlockNumber}: ${historicalErr.message}`
+        );
       }
     }
 
@@ -286,6 +288,13 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
       }
 
       const token = tokenAddress.toLowerCase() as `0x${string}`;
+      if (token !== OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase()) {
+        return {
+          valid: false,
+          reason: `TOKEN_CONTRACT_MISMATCH: Token ${tokenAddress} is not canonical Base Sepolia USDC ${OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS}`,
+        };
+      }
+
       const code = await this.publicClient.getCode({ address: token });
       if (!code || code === '0x') {
         return {
@@ -706,6 +715,25 @@ export class BaseSepoliaAtomicBackend implements IEvmAtomicBackend, IChainCapaci
       timelock: Number(storedHtlc.timelock),
       blockTimestamp,
     };
+  }
+
+  public async getContractHtlcState(htlcId: string): Promise<{ status: number; amount: bigint } | null> {
+    await this.ensureGuards();
+    try {
+      const storedHtlc: any = await this.publicClient.readContract({
+        address: this.htlcAddress,
+        abi: this.htlcAbi,
+        functionName: 'getHtlc',
+        args: [htlcId as `0x${string}`],
+      });
+      if (!storedHtlc) return null;
+      return {
+        status: Number(storedHtlc.status),
+        amount: BigInt(storedHtlc.amount ?? 0),
+      };
+    } catch (err) {
+      throw new Error(`GET_CONTRACT_HTLC_STATE_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

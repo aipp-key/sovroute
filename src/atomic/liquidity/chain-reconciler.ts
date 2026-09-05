@@ -130,6 +130,9 @@ export class ChainInventoryReconciler {
         (this.capacityProvider as any).rehydrateBindings();
       }
 
+      // PHASE 3.5: Reconcile unresolved FUND transaction intents against external chain truth (FF-7)
+      await this.reconcileUnresolvedFundingIntents(token);
+
       // PHASE 4: Reconcile active SQLite swaps against onchain HTLC states (REC-11, REC-12)
       await this.reconcileActiveSwaps(token);
 
@@ -230,6 +233,7 @@ export class ChainInventoryReconciler {
     const headroom = W_safe - R - P;
 
     const now = new Date();
+    const freshUntil = new Date(now.getTime() + this.policy.maxFreshnessMs);
 
     // 5. Deficit detection (REC-7, REC-17)
     if (headroom < 0n) {
@@ -247,6 +251,7 @@ export class ChainInventoryReconciler {
         readinessState: 'DEFICIT',
         observedAt: observation.observedAt,
         updatedAt: now,
+        freshUntil,
       };
       this.persistence.recordChainInventorySnapshot(deficitSnapshot);
       this.lastObservedSnapshot = deficitSnapshot;
@@ -272,6 +277,7 @@ export class ChainInventoryReconciler {
       readinessState: 'READY',
       observedAt: observation.observedAt,
       updatedAt: now,
+      freshUntil,
     };
 
     this.persistence.recordChainInventorySnapshot(snapshot);
@@ -288,6 +294,7 @@ export class ChainInventoryReconciler {
 
   /**
    * Reconciles active swaps against onchain HTLC states (Phase 4 of boot).
+   * Fail-closed: Any failure to observe onchain state of an active swap aborts reconciliation. (FF-3)
    */
   private async reconcileActiveSwaps(token: string): Promise<void> {
     const activeSwaps = this.persistence.listNonTerminalSovereignSwaps();
@@ -312,8 +319,70 @@ export class ChainInventoryReconciler {
             this.persistence.restoreRefundLiquidityReservation(swap.reservationId);
           }
         }
-      } catch {
-        // Individual swap reconciliation error does not halt the overall scan
+      } catch (err: any) {
+        throw new Error(
+          `ACTIVE_SWAP_RECONCILIATION_FAILED: Failed to reconcile active swap ${swap.id} (${swap.evmSwapKey}): ${err?.message ?? err}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Reconciles unresolved FUND transaction intents against external chain truth (Phase 3.5 of boot).
+   * Fail-closed: Any unexpected RPC error during intent verification aborts reconciliation. (FF-7)
+   */
+  private async reconcileUnresolvedFundingIntents(token: string): Promise<void> {
+    const activeIntents = this.persistence.getActiveEvmIntents(this.expectedChainId);
+    const fundIntents = activeIntents.filter((i) => i.actionType === 'FUND');
+
+    for (const intent of fundIntents) {
+      const swap = this.persistence.getSovereignSwapBySwapKey(intent.swapKey);
+      if (swap && swap.tokenAddress && swap.tokenAddress.toLowerCase() !== token) {
+        continue;
+      }
+
+      const txManager =
+        typeof (this.capacityProvider as any).getTransactionManager === 'function'
+          ? (this.capacityProvider as any).getTransactionManager()
+          : undefined;
+
+      if (txManager && typeof txManager.reconcileIntent === 'function') {
+        try {
+          const outcome = await txManager.reconcileIntent(intent.id);
+          if (outcome.status === 'CONFIRMED') {
+            if (swap && swap.reservationId) {
+              this.persistence.commitLiquidityReservation(swap.reservationId);
+            }
+          } else if (
+            outcome.status === 'REVERTED' ||
+            outcome.status === 'FAILED' ||
+            outcome.status === 'NONCE_CONFLICT'
+          ) {
+            if (swap && swap.reservationId) {
+              this.persistence.releaseLiquidityReservation(swap.reservationId);
+            }
+          }
+        } catch (err: any) {
+          throw new Error(
+            `UNRESOLVED_INTENT_RECONCILIATION_FAILED: Failed to reconcile funding intent ${intent.id} for swap ${intent.swapKey}: ${err?.message ?? err}`
+          );
+        }
+      } else if (
+        typeof (this.capacityProvider as any).getContractHtlcState === 'function' &&
+        swap?.evmHtlcId
+      ) {
+        try {
+          const state = await (this.capacityProvider as any).getContractHtlcState(swap.evmHtlcId);
+          if (state && (state.status === 1 || state.status === 2 || state.status === 3)) {
+            if (swap.reservationId) {
+              this.persistence.commitLiquidityReservation(swap.reservationId);
+            }
+          }
+        } catch (err: any) {
+          throw new Error(
+            `UNRESOLVED_INTENT_RECONCILIATION_FAILED: Failed to check HTLC state for funding intent ${intent.id}: ${err?.message ?? err}`
+          );
+        }
       }
     }
   }

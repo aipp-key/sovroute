@@ -50,13 +50,18 @@ export interface LiquidityReservationRecord {
 
 export interface SqliteDbOptions {
   filename?: string;
+  allowLegacyFallback?: boolean;
 }
 
 export class SqlitePersistence {
   private db: DatabaseSync;
+  private allowLegacyFallback = false;
 
   constructor(options: SqliteDbOptions = {}) {
     const filename = options.filename ?? ':memory:';
+    if (options.allowLegacyFallback) {
+      this.allowLegacyFallback = true;
+    }
 
     if (filename !== ':memory:') {
       const dir = path.dirname(filename);
@@ -68,6 +73,14 @@ export class SqlitePersistence {
     this.db = new DatabaseSync(filename);
     this.initPragmas();
     this.initSchema();
+  }
+
+  public enableLegacyFallbackForTesting(): void {
+    this.allowLegacyFallback = true;
+  }
+
+  public isLegacyFallbackEnabled(): boolean {
+    return this.allowLegacyFallback;
   }
 
   private initPragmas(): void {
@@ -299,6 +312,7 @@ export class SqlitePersistence {
         block_hash TEXT,
         readiness_state TEXT NOT NULL,
         observed_at TEXT NOT NULL,
+        fresh_until TEXT,
         updated_at TEXT NOT NULL
       );
     `);
@@ -348,6 +362,18 @@ export class SqlitePersistence {
 
     try {
       this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN reservation_status TEXT;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN evm_htlc_id TEXT;');
+    } catch {
+      // Column already exists
+    }
+
+    try {
+      this.db.exec('ALTER TABLE chain_inventory_snapshots ADD COLUMN fresh_until TEXT;');
     } catch {
       // Column already exists
     }
@@ -1996,8 +2022,17 @@ export class SqlitePersistence {
     const snapshot = this.getLatestChainInventorySnapshot(token);
     if (!snapshot) return 0n;
     if (snapshot.readinessState !== 'READY' && snapshot.readinessState !== 'DEFICIT') return 0n;
+    // Check freshness: stale snapshot yields 0n headroom fail-closed
+    if (snapshot.freshUntil && snapshot.freshUntil.getTime() < Date.now()) {
+      return 0n;
+    }
     const reserved = this.getReservedOperatorBalance(token);
-    const unresolvedP = this.getUnresolvedFundingIntentsAmountInternal(token);
+    let unresolvedP = 0n;
+    try {
+      unresolvedP = this.getUnresolvedFundingIntentsAmountInternal(token);
+    } catch {
+      return 0n; // Fail-closed: 0 safe headroom if liability cannot be determined
+    }
     return snapshot.safeWalletCapacity - reserved - unresolvedP;
   }
 
@@ -2006,46 +2041,43 @@ export class SqlitePersistence {
   }
 
   private getUnresolvedFundingIntentsAmountInternal(token: string): bigint {
-    try {
-      const rows = this.db
-        .prepare(`
-          SELECT swap_key, value_wei FROM evm_transaction_intents
-          WHERE action_type = 'FUND'
-            AND status IN ('CREATED', 'NONCE_RESERVED', 'DISPATCHING', 'PENDING')
-        `)
-        .all() as { swap_key: string; value_wei: string }[];
+    const rows = this.db
+      .prepare(`
+        SELECT swap_key, value_wei FROM evm_transaction_intents
+        WHERE action_type = 'FUND'
+          AND status IN ('CREATED', 'NONCE_RESERVED', 'DISPATCHING', 'PENDING')
+      `)
+      .all() as { swap_key: string; value_wei: string }[];
 
-      let sum = 0n;
-      for (const row of rows) {
-        const swap = this.db
-          .prepare('SELECT id, reservation_id, expected_usdc_amount, token_address FROM sovereign_swaps WHERE evm_swap_key = ?')
-          .get(row.swap_key) as { id: string; reservation_id: string; expected_usdc_amount: string; token_address?: string } | undefined;
+    let sum = 0n;
+    for (const row of rows) {
+      const swap = this.db
+        .prepare('SELECT id, reservation_id, expected_usdc_amount, token_address FROM sovereign_swaps WHERE evm_swap_key = ?')
+        .get(row.swap_key) as { id: string; reservation_id: string; expected_usdc_amount: string; token_address?: string } | undefined;
 
-        if (swap && (!swap.token_address || swap.token_address.toLowerCase() === token)) {
-          if (swap.reservation_id) {
-            const res = this.db
-              .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
-              .get(swap.reservation_id) as { status: string } | undefined;
-            if (res && res.status === 'RESERVED') {
-              // Already counted in R; do not double-subtract!
-              continue;
-            }
-          }
-          if (swap.expected_usdc_amount) {
-            sum += BigInt(swap.expected_usdc_amount);
+      if (swap && (!swap.token_address || swap.token_address.toLowerCase() === token)) {
+        if (swap.reservation_id) {
+          const res = this.db
+            .prepare('SELECT status FROM liquidity_reservations WHERE id = ?')
+            .get(swap.reservation_id) as { status: string } | undefined;
+          if (res && res.status === 'RESERVED') {
+            // Already counted in R; do not double-subtract!
+            continue;
           }
         }
+        if (swap.expected_usdc_amount) {
+          sum += BigInt(swap.expected_usdc_amount);
+        }
       }
-      return sum;
-    } catch {
-      return 0n;
     }
+    return sum;
   }
 
   public reserveLiquidity(
     executionId: string,
     tokenAddress: string,
-    amountUnits: bigint
+    amountUnits: bigint,
+    options?: { allowLegacyFallback?: boolean; maxFreshnessMs?: number }
   ): { reservationId: string; reserved: boolean } {
     if (amountUnits <= 0n) {
       throw new Error(
@@ -2079,6 +2111,26 @@ export class SqlitePersistence {
       let available = 0n;
 
       if (snapshotRow) {
+        // Transactional Freshness Enforcement (REC-3, FF-6)
+        const nowMs = Date.now();
+        const freshUntilStr = snapshotRow.fresh_until as string | null | undefined;
+        let isStale = false;
+        if (freshUntilStr) {
+          isStale = new Date(freshUntilStr).getTime() < nowMs;
+        } else {
+          const observedAtMs = new Date(snapshotRow.observed_at as string).getTime();
+          const maxFreshnessMs = options?.maxFreshnessMs ?? 60_000;
+          isStale = (nowMs - observedAtMs) > maxFreshnessMs;
+        }
+
+        if (isStale) {
+          this.db
+            .prepare("UPDATE chain_inventory_snapshots SET readiness_state = 'DEGRADED', updated_at = ? WHERE token_address = ?")
+            .run(new Date().toISOString(), token);
+          this.db.exec('COMMIT');
+          throw new EvmInventoryUnavailableError(`STALE_SNAPSHOT: Operator inventory snapshot is expired/stale for token ${token}`);
+        }
+
         const readiness = snapshotRow.readiness_state as string;
         if (readiness === 'NOT_READY' || readiness === 'RECONCILING') {
           this.db.exec('COMMIT');
@@ -2107,7 +2159,13 @@ export class SqlitePersistence {
           activeReserved += BigInt(r.amount_units);
         }
 
-        const unresolvedP = this.getUnresolvedFundingIntentsAmountInternal(token);
+        let unresolvedP = 0n;
+        try {
+          unresolvedP = this.getUnresolvedFundingIntentsAmountInternal(token);
+        } catch (err: any) {
+          this.db.exec('COMMIT');
+          throw new EvmInventoryUnavailableError(`Failed to calculate unresolved funding liabilities: ${err?.message ?? 'QUERY_ERROR'}`);
+        }
 
         // SAFE HEADROOM = W_safe - R - P
         // CRITICAL (REC-1): Committed HTLCs (C) are NOT subtracted from safe wallet capacity!
@@ -2123,7 +2181,15 @@ export class SqlitePersistence {
           );
         }
       } else {
-        // Fallback for legacy DB/tests without chain snapshot
+        // Fallback for legacy DB/tests: strictly forbidden in production (FF-5)
+        const canFallback = options?.allowLegacyFallback ?? this.allowLegacyFallback;
+        if (!canFallback) {
+          this.db.exec('COMMIT');
+          throw new InventoryNotReadyError(
+            `NO_CHAIN_INVENTORY_SNAPSHOT: Operator inventory is NOT_READY for token ${token}. Reconciliation is required.`
+          );
+        }
+
         const confirmedRow = this.db
           .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
           .get(token) as { confirmed_balance: string } | undefined;
@@ -2298,9 +2364,9 @@ export class SqlitePersistence {
       INSERT INTO chain_inventory_snapshots (
         token_address, chain_id, operator_address, wallet_balance_latest,
         wallet_balance_finalized, safe_wallet_capacity, latest_block_number,
-        finalized_block_number, block_hash, readiness_state, observed_at, updated_at
+        finalized_block_number, block_hash, readiness_state, observed_at, fresh_until, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(token_address) DO UPDATE SET
         chain_id = excluded.chain_id,
         operator_address = excluded.operator_address,
@@ -2312,8 +2378,12 @@ export class SqlitePersistence {
         block_hash = excluded.block_hash,
         readiness_state = excluded.readiness_state,
         observed_at = excluded.observed_at,
+        fresh_until = excluded.fresh_until,
         updated_at = excluded.updated_at
     `);
+    const freshUntilStr = snapshot.freshUntil
+      ? snapshot.freshUntil.toISOString()
+      : new Date(snapshot.observedAt.getTime() + 60_000).toISOString();
     stmt.run(
       token,
       snapshot.chainId,
@@ -2326,6 +2396,7 @@ export class SqlitePersistence {
       snapshot.blockHash ?? null,
       snapshot.readinessState,
       observedAt,
+      freshUntilStr,
       now
     );
   }
@@ -2348,6 +2419,7 @@ export class SqlitePersistence {
       blockHash: row.block_hash ? (row.block_hash as string) : undefined,
       readinessState: row.readiness_state as InventoryReadinessState,
       observedAt: new Date(row.observed_at as string),
+      freshUntil: row.fresh_until ? new Date(row.fresh_until as string) : undefined,
       updatedAt: new Date(row.updated_at as string),
     };
   }
@@ -2374,6 +2446,7 @@ export class SqlitePersistence {
         finalizedBlockNumber: 0,
         readinessState: state,
         observedAt: new Date(),
+        freshUntil: new Date(Date.now() + 60_000),
         updatedAt: new Date(),
       });
     }
@@ -2382,13 +2455,18 @@ export class SqlitePersistence {
   public getInventoryReadinessState(tokenAddress: string): InventoryReadinessState {
     const snapshot = this.getLatestChainInventorySnapshot(tokenAddress);
     if (!snapshot) {
-      const legacy = this.db
-        .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
-        .get(tokenAddress.toLowerCase()) as { confirmed_balance: string } | undefined;
-      if (legacy && BigInt(legacy.confirmed_balance) > 0n) {
-        return 'READY';
+      if (this.allowLegacyFallback) {
+        const legacy = this.db
+          .prepare('SELECT confirmed_balance FROM operator_inventory WHERE token_address = ?')
+          .get(tokenAddress.toLowerCase()) as { confirmed_balance: string } | undefined;
+        if (legacy && BigInt(legacy.confirmed_balance) > 0n) {
+          return 'READY';
+        }
       }
       return 'NOT_READY';
+    }
+    if (snapshot.freshUntil && snapshot.freshUntil.getTime() < Date.now()) {
+      return 'DEGRADED';
     }
     return snapshot.readinessState;
   }

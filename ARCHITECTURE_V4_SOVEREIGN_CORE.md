@@ -667,4 +667,18 @@ Both `bootstrapProductionRouter` and `AtomicCoordinator.prepareSwap` strictly re
 ### 6. External Treasury Decoupling
 Operator USDC inventory provisioning is an asynchronous operational task. CCTP cross-chain minting and decentralized exchange (DEX) liquidity operations are strictly decoupled from the customer swap critical path.
 
+### 7. Fail-Closed Hardening & Startup Boundaries (FF-1 through FF-10)
+Following independent code review, the reconciliation layer has been hardened with strict fail-closed boundaries:
+1. **Typed Reconcile-on-Boot Contract (FF-1)**: `bootstrapProductionRouter` strictly mandates an `IReconciledLiquidityInventory` implementation with an explicit `reconcileOnBoot` method, and enforces that any `SqliteLiquidityInventory` is bound to the exact same `SqlitePersistence` instance as the router.
+2. **Finality Observation Failure Semantics (FF-2)**: `observeWalletCapacity` throws `FINALITY_OBSERVATION_FAILED` if both finalized block tag and historical RPC reads fail. Never returns optimistic or unverified balances as finalized.
+3. **Active Swap Reconciliation Error Propagation (FF-3)**: RPC errors during startup swap HTLC checks propagate immediately as `ACTIVE_SWAP_RECONCILIATION_FAILED`.
+4. **Funding Intent Accounting Safety (FF-4)**: Database query errors in unresolved funding intents calculation rethrow inside `BEGIN IMMEDIATE` and abort reservation fail-closed.
+5. **Absence of Chain Snapshot Rejection (FF-5)**: `reserveLiquidity` refuses reservations fail-closed (`InventoryNotReadyError`) if no verified chain inventory snapshot exists in SQLite. Un-reconciled legacy `confirmed_balance` cannot authorize production swaps.
+6. **Transactional Snapshot Freshness Verification (FF-6)**: In `reserveLiquidity`, snapshot freshness (`freshUntil`) is validated transactionally inside `BEGIN IMMEDIATE`. Stale snapshots are marked `DEGRADED` in SQLite and throw `EvmInventoryUnavailableError`.
+7. **Phase 3.5 Funding Intent Active Startup Reconciliation (FF-7)**: Unresolved funding intents are actively reconciled against on-chain contract HTLC status during startup. Mined funding intents are committed before opening traffic.
+8. **Canonical Base Sepolia USDC Address Verification (FF-8)**: Contract identity validation strictly asserts equality against `OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS` (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`), rejecting arbitrary tokens fail-closed.
+9. **Base Sepolia Chain ID 84532 Semantics (FF-9)**: Default chain ID for all test backends and mocks is canonical Base Sepolia (`chainId = 84532`).
+10. **Policy vs. Invariant Boundary (FF-10)**: Mathematical safe headroom logic is strictly separated from network finality and freshness policies (`BASE_SEPOLIA_TEST_POLICY`).
+
+
 

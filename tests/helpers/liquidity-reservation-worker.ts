@@ -29,6 +29,7 @@ process.on('message', async (msg: WorkerInitMessage | WorkerStartMessage) => {
   if (msg.type === 'INIT') {
     config = msg;
     persistence = new SqlitePersistence({ filename: config.dbPath });
+    persistence.enableLegacyFallbackForTesting();
     if (process.send) {
       process.send({
         type: 'READY',

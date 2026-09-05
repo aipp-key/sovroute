@@ -38,7 +38,9 @@ interface WorkerResult {
   invoiceCreated: boolean;
 }
 
-const defaultToken = '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../src/atomic/evm/base-guard.ts';
+
+const defaultToken = OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase();
 const workerScriptPath = join(import.meta.dirname, 'helpers', 'liquidity-reservation-worker.ts');
 
 function runChildWorkers(configs: WorkerInitMessage[]): Promise<WorkerResult[]> {

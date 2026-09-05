@@ -1340,4 +1340,20 @@ Moving from local devnet (Hardhat instant automining) to a public rollup (Base S
 * **REC-19 (Post-Broadcast Crash Safety)**: A crash occurring between transaction broadcast and local commit must reconcile on-chain contract state before retrying funding or releasing reservations.
 * **REC-20 (Prohibition of Stale Local Authority)**: Stale SQLite snapshots exceeding the configured staleness threshold (`staleSnapshotToleranceMs`) cannot authorize new financial commitments without an updated onchain observation.
 
+---
+
+## 31. FAIL-CLOSED INVENTORY RECONCILIATION HARDENING (FF-1 THROUGH FF-10)
+
+* **FF-1 (Typed Reconcile-on-Boot Contract & Persistence Matching)**: Production bootstrap (`bootstrapProductionRouter`) strictly requires an `IReconciledLiquidityInventory` implementation with an explicit `reconcileOnBoot` method. The inventory's underlying persistence instance MUST match the bootstrap persistence instance (`INVENTORY_PERSISTENCE_MISMATCH`). If boot reconciliation yields any state other than `READY`, bootstrap aborts fail-closed.
+* **FF-2 (Finality Observation Failure Fail-Closed Semantics)**: If both finalized block tag query and historical block read fail, `observeWalletCapacity` throws `FINALITY_OBSERVATION_FAILED`. Latest (unfinalized) balances are NEVER silently returned as finalized balances.
+* **FF-3 (Active Swap Reconciliation Error Propagation)**: Any RPC error encountered during active swap HTLC verification aborts startup fail-closed (`ACTIVE_SWAP_RECONCILIATION_FAILED`), preventing swaps in indeterminate states from going live.
+* **FF-4 (Funding Intent Accounting Safety)**: In `getUnresolvedFundingIntentsAmountInternal`, query errors must rethrow under `BEGIN IMMEDIATE` and abort reservation fail-closed (`EvmInventoryUnavailableError`), rather than failing open to `0n`.
+* **FF-5 (Absence of Chain Snapshot Rejection)**: `reserveLiquidity` refuses reservations fail-closed (`InventoryNotReadyError`) if no verified chain inventory snapshot exists in SQLite. Un-reconciled legacy `operator_inventory.confirmed_balance` cannot authorize production swaps.
+* **FF-6 (Transactional Snapshot Freshness Verification)**: In `reserveLiquidity`, snapshot freshness (`freshUntil`) is validated transactionally inside `BEGIN IMMEDIATE`. If expired, the snapshot is marked `DEGRADED` in SQLite and throws `EvmInventoryUnavailableError`.
+* **FF-7 (Phase 3.5 Funding Intent Active Startup Reconciliation)**: Unresolved funding intents are actively reconciled against on-chain contract HTLC status during startup. Mined funding intents are committed before opening traffic.
+* **FF-8 (Canonical Base Sepolia USDC Address Verification)**: Contract identity validation strictly asserts equality against `OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS` (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`), rejecting arbitrary tokens fail-closed.
+* **FF-9 (Base Sepolia Chain ID 84532 Semantics)**: Default chain ID for all test backends and mocks is canonical Base Sepolia (`chainId = 84532`), eliminating stale Arbitrum or mock chain defaults.
+* **FF-10 (Policy vs. Invariant Boundary)**: Mathematical safe headroom logic is strictly separated from network finality and freshness policies (`BASE_SEPOLIA_TEST_POLICY`).
+
+
 

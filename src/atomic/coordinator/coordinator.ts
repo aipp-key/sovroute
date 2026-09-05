@@ -45,6 +45,7 @@ import {
   type EvmHtlcClaimedEvidence,
   type EvmHtlcRefundedEvidence,
 } from '../evm/evm-types.ts';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../evm/base-guard.ts';
 import { SqlitePersistence } from '../../persistence/sqlite.ts';
 
 export interface CreateAtomicSwapParams {
@@ -218,7 +219,7 @@ export class AtomicCoordinator {
       config?.tokenAddress ??
       (typeof (evm as any).getTokenAddress === 'function'
         ? (evm as any).getTokenAddress()
-        : '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40');
+        : OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS);
     this.defaultRefundAddress =
       config?.operatorRefundAddress ?? '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
   }

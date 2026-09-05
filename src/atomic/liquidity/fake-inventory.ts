@@ -6,7 +6,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ILiquidityInventory } from '../types.ts';
+import type { IReconciledLiquidityInventory, InventoryReadinessState } from '../types.ts';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../evm/base-guard.ts';
 
 export interface FakeReservationRecord {
   id: string;
@@ -16,7 +17,7 @@ export interface FakeReservationRecord {
   status: 'RESERVED' | 'COMMITTED' | 'RELEASED';
 }
 
-export class FakeLiquidityInventory implements ILiquidityInventory {
+export class FakeLiquidityInventory implements IReconciledLiquidityInventory {
   private balances = new Map<string, bigint>();
   private reservations = new Map<string, FakeReservationRecord>();
 
@@ -24,6 +25,9 @@ export class FakeLiquidityInventory implements ILiquidityInventory {
     if (initialBalances) {
       for (const [token, amt] of Object.entries(initialBalances)) {
         this.balances.set(token.toLowerCase(), amt);
+        if (token.toLowerCase() === '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40') {
+          this.balances.set(OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase(), amt);
+        }
       }
     }
   }
@@ -127,5 +131,30 @@ export class FakeLiquidityInventory implements ILiquidityInventory {
 
   setBalance(tokenAddress: string, amount: bigint): void {
     this.balances.set(tokenAddress.toLowerCase(), amount);
+    if (tokenAddress.toLowerCase() === '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40') {
+      this.balances.set(OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase(), amount);
+    }
+  }
+
+  async getReadinessState(_tokenAddress?: string): Promise<InventoryReadinessState> {
+    return 'READY';
+  }
+
+  async getSafeHeadroom(tokenAddress: string): Promise<bigint> {
+    return this.getAvailableBalance(tokenAddress);
+  }
+
+  async reconcile(
+    tokenAddress?: string
+  ): Promise<{ readinessState: InventoryReadinessState; headroom: bigint }> {
+    const headroom = await this.getAvailableBalance(tokenAddress ?? '');
+    return { readinessState: 'READY', headroom };
+  }
+
+  async reconcileOnBoot(
+    tokenAddress?: string
+  ): Promise<{ readinessState: InventoryReadinessState; headroom: bigint; error?: string }> {
+    const headroom = await this.getAvailableBalance(tokenAddress ?? '');
+    return { readinessState: 'READY', headroom };
   }
 }

@@ -36,6 +36,7 @@ import { FakeEvmAtomicBackend } from '../src/atomic/evm/fake-backend.ts';
 import { FakeLiquidityInventory } from '../src/atomic/liquidity/fake-inventory.ts';
 import { SovereignAtomicState } from '../src/atomic/types.ts';
 import { LightningSettlementGateError } from '../src/atomic/evm/evm-types.ts';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../src/atomic/evm/base-guard.ts';
 
 function generateClientCrypto() {
   const secret = '0x' + randomBytes(32).toString('hex');
@@ -61,7 +62,7 @@ describe('PHASE 5B — END-TO-END COORDINATOR RECOVERY & CROSS-RAIL RELIABILITY'
     lightning = new FakeLightningAtomicBackend();
     evm = new FakeEvmAtomicBackend();
     inventory = new FakeLiquidityInventory({
-      '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40': 1_000_000_000n,
+      [OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase()]: 1_000_000_000n,
     });
     coordinator = new AtomicCoordinator(lightning, evm, inventory, {
       persistence,
@@ -95,7 +96,7 @@ describe('PHASE 5B — END-TO-END COORDINATOR RECOVERY & CROSS-RAIL RELIABILITY'
         hashLock,
         claimingAddress: '0xclient1',
         targetDestinationAddress: '0xclient1',
-        tokenAddress: '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40',
+        tokenAddress: OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS,
         refundAddress: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
       });
 
@@ -111,7 +112,7 @@ describe('PHASE 5B — END-TO-END COORDINATOR RECOVERY & CROSS-RAIL RELIABILITY'
           amountSats: 10_000n,
           expectedUsdcAmount: 10_000_000n,
           state: SovereignAtomicState.PLAN_PREPARED,
-          tokenAddress: '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40',
+          tokenAddress: OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS,
           refundAddress: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
           cltvExpiryBlocks: 144,
           timelockSeconds: 43200,

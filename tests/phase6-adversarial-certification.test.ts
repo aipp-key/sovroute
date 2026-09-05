@@ -2581,7 +2581,7 @@ describe('PHASE 6 — ADVERSARIAL & FAILURE CERTIFICATION SUITE', () => {
     });
 
     it('G-09: chain ID mutated', async () => {
-      assert.strictEqual(evm.chainId, 42161);
+      assert.strictEqual(evm.chainId, 84532);
     });
 
     it('G-10: EVM HTLC/swap key mismatch', async () => {

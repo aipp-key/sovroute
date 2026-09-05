@@ -7,11 +7,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ILiquidityInventory, InventoryReadinessState } from '../types.ts';
 import {
+  type InventoryReadinessState,
   InventoryNotReadyError,
   LiquidityDeficitError,
   EvmInventoryUnavailableError,
+  type IReconciledLiquidityInventory,
 } from '../types.ts';
 import type { SqlitePersistence, LiquidityReservationRecord } from '../../persistence/sqlite.ts';
 import type { ChainInventoryReconciler } from './chain-reconciler.ts';
@@ -20,7 +21,7 @@ export interface SqliteLiquidityInventoryOptions {
   reconciler?: ChainInventoryReconciler | undefined;
 }
 
-export class SqliteLiquidityInventory implements ILiquidityInventory {
+export class SqliteLiquidityInventory implements IReconciledLiquidityInventory {
   private readonly persistence: SqlitePersistence;
   private reconciler?: ChainInventoryReconciler | undefined;
 
@@ -42,6 +43,10 @@ export class SqliteLiquidityInventory implements ILiquidityInventory {
     }
   }
 
+  public getPersistence(): SqlitePersistence {
+    return this.persistence;
+  }
+
   public setReconciler(reconciler: ChainInventoryReconciler): void {
     this.reconciler = reconciler;
   }
@@ -54,7 +59,15 @@ export class SqliteLiquidityInventory implements ILiquidityInventory {
     if (this.reconciler) {
       return this.reconciler.getReadinessState(tokenAddress);
     }
-    return this.persistence.getInventoryReadinessState(tokenAddress ?? '0x0000000000000000000000000000000000000000');
+    const token = (tokenAddress ?? '0x0000000000000000000000000000000000000000').toLowerCase();
+    const state = this.persistence.getInventoryReadinessState(token);
+    if (state === 'NOT_READY' && (!this.reconciler || this.persistence.isLegacyFallbackEnabled())) {
+      const legacy = this.persistence.getConfirmedOperatorBalance(token);
+      if (legacy > 0n) {
+        return 'READY';
+      }
+    }
+    return state;
   }
 
   public async getSafeHeadroom(tokenAddress: string): Promise<bigint> {
@@ -64,19 +77,33 @@ export class SqliteLiquidityInventory implements ILiquidityInventory {
     return this.persistence.getSafeHeadroom(tokenAddress);
   }
 
-  public async reconcile(tokenAddress?: string): Promise<void> {
-    if (this.reconciler) {
-      await this.reconciler.reconcile(tokenAddress);
+  public async reconcile(tokenAddress?: string): Promise<{
+    readinessState: InventoryReadinessState;
+    headroom: bigint;
+  }> {
+    if (!this.reconciler) {
+      throw new Error('RECONCILER_NOT_CONFIGURED: Reconciler is required for reconciliation');
     }
+    return await this.reconciler.reconcile(tokenAddress);
   }
 
-  public async reconcileOnBoot(tokenAddress?: string): Promise<void> {
-    if (this.reconciler) {
-      const res = await this.reconciler.reconcileOnBoot(tokenAddress);
-      if (res.readinessState !== 'READY') {
-        throw new Error(`INVENTORY_NOT_READY: Startup reconciliation failed with state ${res.readinessState}: ${res.error ?? 'UNKNOWN'}`);
-      }
+  public async reconcileOnBoot(tokenAddress?: string): Promise<{
+    readinessState: InventoryReadinessState;
+    headroom: bigint;
+    error?: string;
+  }> {
+    if (!this.reconciler) {
+      throw new Error(
+        'RECONCILER_NOT_CONFIGURED: SqliteLiquidityInventory requires a ChainInventoryReconciler for startup reconciliation'
+      );
     }
+    const res = await this.reconciler.reconcileOnBoot(tokenAddress);
+    if (res.readinessState !== 'READY') {
+      throw new Error(
+        `INVENTORY_NOT_READY: Startup reconciliation failed with state ${res.readinessState}: ${res.error ?? 'UNKNOWN'}`
+      );
+    }
+    return res;
   }
 
   async reserve(
@@ -97,7 +124,9 @@ export class SqliteLiquidityInventory implements ILiquidityInventory {
       }
     }
     const execId = executionId ?? `anon_${randomUUID()}`;
-    return this.persistence.reserveLiquidity(execId, tokenAddress, amountUnits);
+    return this.persistence.reserveLiquidity(execId, tokenAddress, amountUnits, {
+      allowLegacyFallback: !this.reconciler,
+    });
   }
 
   async release(reservationId: string): Promise<void> {

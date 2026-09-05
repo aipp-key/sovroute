@@ -23,6 +23,7 @@ import { FakeLightningAtomicBackend } from '../src/atomic/lightning/fake-backend
 import { FakeEvmAtomicBackend } from '../src/atomic/evm/fake-backend.ts';
 import { SqliteLiquidityInventory } from '../src/atomic/liquidity/sqlite-inventory.ts';
 import { SovereignAtomicState } from '../src/atomic/types.ts';
+import { OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS } from '../src/atomic/evm/base-guard.ts';
 
 function generateClientCrypto() {
   const secret = '0x' + randomBytes(32).toString('hex');
@@ -42,13 +43,14 @@ describe('LIQUIDITY ACCOUNTING & DURABLE RESERVATION SAFETY SUITE', () => {
   let inventory: SqliteLiquidityInventory;
   let coordinator: AtomicCoordinator;
 
-  const defaultToken = '0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40';
+  const defaultToken = OFFICIAL_BASE_SEPOLIA_USDC_ADDRESS.toLowerCase();
   const defaultRefund = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
   const initialBalance = 1_000_000_000n; // 1,000 USDC (6 decimals)
 
   beforeEach(() => {
     dbPath = join(tmpdir(), `phase-liq-safety-${randomUUID()}.db`);
     persistence = new SqlitePersistence({ filename: dbPath });
+    persistence.enableLegacyFallbackForTesting();
     lightning = new FakeLightningAtomicBackend();
     evm = new FakeEvmAtomicBackend();
     inventory = new SqliteLiquidityInventory(persistence, { [defaultToken]: initialBalance });

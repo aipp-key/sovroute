@@ -223,6 +223,7 @@ export interface ChainInventorySnapshot {
   blockHash?: string | undefined;
   readinessState: InventoryReadinessState;
   observedAt: Date;
+  freshUntil?: Date | undefined;
   updatedAt: Date;
 }
 
@@ -233,12 +234,19 @@ export interface BaseInventoryReconciliationPolicy {
   failClosedOnDeficit: boolean;
 }
 
-export const DEFAULT_INVENTORY_RECONCILIATION_POLICY: BaseInventoryReconciliationPolicy = {
+/**
+ * Explicit Base Sepolia TEST policy.
+ * NEVER to be used silently as future production policy.
+ */
+export const BASE_SEPOLIA_TEST_POLICY: BaseInventoryReconciliationPolicy = {
   maxFreshnessMs: 60_000, // 60 seconds
   requiredConfirmations: 2, // Matches Base Sepolia test policy
   reorgLagTolerance: 3,
   failClosedOnDeficit: true,
 };
+
+// Backwards-compatible alias for test transitions
+export const DEFAULT_INVENTORY_RECONCILIATION_POLICY = BASE_SEPOLIA_TEST_POLICY;
 
 export interface IChainCapacityProvider {
   observeWalletCapacity(tokenAddress: string): Promise<ChainCapacityObservation>;
@@ -266,8 +274,25 @@ export interface ILiquidityInventory {
   getCommittedBalance?(tokenAddress: string): Promise<bigint>;
   getReadinessState?(tokenAddress?: string): Promise<InventoryReadinessState>;
   getSafeHeadroom?(tokenAddress: string): Promise<bigint>;
-  reconcile?(tokenAddress?: string): Promise<void>;
-  reconcileOnBoot?(tokenAddress?: string): Promise<void>;
+  reconcile?(tokenAddress?: string): Promise<any>;
+  reconcileOnBoot?(tokenAddress?: string): Promise<any>;
+}
+
+/**
+ * Mandatory production-grade inventory interface with typed startup reconciliation (FF-1).
+ */
+export interface IReconciledLiquidityInventory extends ILiquidityInventory {
+  reconcileOnBoot(tokenAddress?: string): Promise<{
+    readinessState: InventoryReadinessState;
+    headroom: bigint;
+    error?: string;
+  }>;
+  reconcile(tokenAddress?: string): Promise<{
+    readinessState: InventoryReadinessState;
+    headroom: bigint;
+  }>;
+  getReadinessState(tokenAddress?: string): Promise<InventoryReadinessState>;
+  getSafeHeadroom(tokenAddress: string): Promise<bigint>;
 }
 
 export const SovereignAtomicState = {
