@@ -217,13 +217,6 @@ async function bootstrapProductionRouterInternal(
     };
   }
 
-  if (bootResult.readinessState === 'DEFICIT') {
-    persistence.close();
-    throw new Error(
-      `INVENTORY_BOOT_RECONCILIATION_FAILED: Inventory readiness state is DEFICIT, expected READY (error: ${bootResult.error ?? 'none'})`
-    );
-  }
-
   // Inspect non-terminal swaps in persistence
   const activeSwaps = persistence.listNonTerminalSovereignSwaps();
   const hasRecoverySwaps = activeSwaps.some(
@@ -231,6 +224,17 @@ async function bootstrapProductionRouterInternal(
       s.recoveryRequired ||
       s.state === SovereignAtomicState.RECOVERY_REQUIRED ||
       s.state === SovereignAtomicState.MANUAL_REVIEW ||
+      s.state === SovereignAtomicState.LIGHTNING_HELD ||
+      s.state === SovereignAtomicState.EVM_FUNDED ||
+      s.state === SovereignAtomicState.REFUND_ELIGIBLE ||
+      s.state === SovereignAtomicState.EVM_REFUND_PENDING ||
+      s.state === SovereignAtomicState.EVM_REFUND_CONFIRMED ||
+      s.state === SovereignAtomicState.LIGHTNING_CANCEL_PENDING ||
+      s.state === SovereignAtomicState.CLAIMING ||
+      s.state === SovereignAtomicState.EVM_CLAIM_CONFIRMED ||
+      s.state === SovereignAtomicState.LIGHTNING_SETTLED ||
+      s.state === SovereignAtomicState.DESTINATION_PENDING ||
+      s.state === SovereignAtomicState.INVOICE_CREATED ||
       (s.state === SovereignAtomicState.EVM_FUNDING_PENDING && s.evmSwapKey && (() => {
         const intent = persistence.getEvmIntentBySwapKey(s.evmSwapKey, 'FUND');
         return intent && !['CREATED', 'NONCE_RESERVED', 'DISPATCHING', 'PENDING', 'CONFIRMED'].includes(intent.status);

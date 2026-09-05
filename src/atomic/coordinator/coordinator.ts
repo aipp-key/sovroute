@@ -372,26 +372,26 @@ export class AtomicCoordinator {
       const timelockSeconds = params.timelockSeconds ?? 43200; // 12h
       const now = new Date();
 
-      if (!recheck) {
-        if (typeof (this.inventory as any).getReadinessState === 'function') {
-          const readiness = await (this.inventory as any).getReadinessState(tokenAddress);
-          if (readiness !== 'READY') {
-            if (readiness === 'DEFICIT') {
-              throw new LiquidityDeficitError(
-                `Cannot prepare swap: operator liquidity is in DEFICIT for token ${tokenAddress}`
-              );
-            } else if (readiness === 'UNKNOWN' || readiness === 'DEGRADED') {
-              throw new EvmInventoryUnavailableError(
-                `Cannot prepare swap: EVM inventory state is ${readiness} for token ${tokenAddress}`
-              );
-            } else {
-              throw new InventoryNotReadyError(
-                `Cannot prepare swap: operator inventory is not ready (state: ${readiness})`
-              );
-            }
+      if (typeof (this.inventory as any).getReadinessState === 'function') {
+        const readiness = await (this.inventory as any).getReadinessState(tokenAddress);
+        if (readiness !== 'READY') {
+          if (readiness === 'DEFICIT') {
+            throw new LiquidityDeficitError(
+              `Cannot prepare swap: operator liquidity is in DEFICIT for token ${tokenAddress}`
+            );
+          } else if (readiness === 'UNKNOWN' || readiness === 'DEGRADED') {
+            throw new EvmInventoryUnavailableError(
+              `Cannot prepare swap: EVM inventory state is ${readiness} for token ${tokenAddress}`
+            );
+          } else {
+            throw new InventoryNotReadyError(
+              `Cannot prepare swap: operator inventory is not ready (state: ${readiness})`
+            );
           }
         }
+      }
 
+      if (!recheck) {
         // Reserve operator inventory before issuing hold invoice (USDC atomic units, NOT sats)
         const reservation = await this.inventory.reserve(
           params.expectedUsdcAmount,
@@ -1337,10 +1337,17 @@ export class AtomicCoordinator {
       const lnState = observedInvoice?.state;
       const evmState = 'state' in evmObservation ? evmObservation.state : undefined;
 
+      const isBaseClaimed = evmObservation.kind === 'CLAIMED' || evmState?.completed === true;
+      const isBaseRefunded = evmObservation.kind === 'REFUNDED' || evmState?.refunded === true;
+      const isBaseFunded = evmObservation.kind === 'FUNDED' || (evmState?.funded && !evmState?.completed && !evmState?.refunded);
+      const isBaseAbsent = evmObservation.kind === 'NOT_FUNDED_PROVEN';
+
+      // =========================================================================
       // CASE 1: Lightning is already SETTLED externally
+      // =========================================================================
       if (lnState === 'SETTLED') {
         // CASE A: Lightning = SETTLED and Base = CLAIMED / completed
-        if (evmObservation.kind === 'CLAIMED' || evmState?.completed === true) {
+        if (isBaseClaimed) {
           if (record.reservationId) {
             this.persistence.settleLiquidityReservation(record.reservationId);
           }
@@ -1358,7 +1365,7 @@ export class AtomicCoordinator {
         }
 
         // CASE B: Lightning = SETTLED and Base = FUNDED / LOCKED
-        if (evmObservation.kind === 'FUNDED' || (evmState?.funded && !evmState?.completed && !evmState?.refunded)) {
+        if (isBaseFunded) {
           return this.markRecoveryRequired(
             executionId,
             'Lightning is SETTLED but Base HTLC remains LOCKED/FUNDED; claim confirmation required',
@@ -1367,7 +1374,7 @@ export class AtomicCoordinator {
         }
 
         // CASE C: Lightning = SETTLED and Base = NOT_FUNDED_PROVEN
-        if (evmObservation.kind === 'NOT_FUNDED_PROVEN') {
+        if (isBaseAbsent) {
           return this.markRecoveryRequired(
             executionId,
             'CRITICAL_INVARIANT_VIOLATION: Lightning is SETTLED but Base HTLC was proven NOT_FUNDED',
@@ -1376,7 +1383,7 @@ export class AtomicCoordinator {
         }
 
         // CASE D: Lightning = SETTLED and Base = REFUNDED
-        if (evmObservation.kind === 'REFUNDED' || evmState?.refunded === true) {
+        if (isBaseRefunded) {
           return this.markRecoveryRequired(
             executionId,
             'CRITICAL_INVARIANT_VIOLATION: Lightning is SETTLED but Base HTLC is REFUNDED',
@@ -1392,13 +1399,24 @@ export class AtomicCoordinator {
         );
       }
 
+      // =========================================================================
       // CASE 2: Base HTLC is CLAIMED on-chain
-      if (evmState && evmState.completed) {
+      // =========================================================================
+      if (isBaseClaimed) {
         // CASE F: Lightning = CANCELED (or NOT_FOUND) and Base = CLAIMED
         if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
           return this.markRecoveryRequired(
             executionId,
             `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but Lightning invoice is ${lightningObservation.kind === 'NOT_FOUND' ? 'NOT_FOUND' : 'CANCELED'}`,
+            'CROSS_RAIL_INVARIANT_VIOLATION'
+          );
+        }
+
+        // Base = CLAIMED and Lightning = OPEN
+        if (lnState === 'OPEN') {
+          return this.markRecoveryRequired(
+            executionId,
+            'CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but Lightning invoice is OPEN',
             'CROSS_RAIL_INVARIANT_VIOLATION'
           );
         }
@@ -1413,35 +1431,107 @@ export class AtomicCoordinator {
             }
           }
         }
+
+        return this.mustGetRecord(executionId);
       }
 
+      // =========================================================================
       // CASE 3: Base HTLC is REFUNDED on-chain
-      if (evmState && evmState.refunded) {
-        if (lnState === 'ACCEPTED') {
-          await this.lightning.cancelHoldInvoice(record.holdInvoice!.paymentHash);
-        }
-        if (record.reservationId && record.reservationStatus === 'COMMITTED') {
-          if (typeof (this.inventory as any).restoreRefund === 'function') {
-            await (this.inventory as any).restoreRefund(record.reservationId);
-          } else {
+      // =========================================================================
+      if (isBaseRefunded) {
+        if (lnState === 'OPEN' || lnState === 'ACCEPTED') {
+          const cleanHash = record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '').toLowerCase();
+          let cancelConfirmed = false;
+          let authoritativeCanceledAt: Date | undefined;
+
+          try {
+            const cancelRes = await this.lightning.cancelHoldInvoice(cleanHash);
+            if (cancelRes && cancelRes.canceled) {
+              cancelConfirmed = true;
+              authoritativeCanceledAt = cancelRes.canceledAt;
+            }
+          } catch (cancelErr: unknown) {
+            // Attempt authoritative observation to see if invoice was canceled despite call error
+            try {
+              const recheckObs = await this.observeLightningForRecovery(record);
+              if (recheckObs.kind === 'FOUND' && recheckObs.invoice.state === 'CANCELED') {
+                cancelConfirmed = true;
+                authoritativeCanceledAt = recheckObs.invoice.canceledAt ?? new Date();
+              }
+            } catch {
+              // Re-observation failed, will mark recovery required below
+            }
+          }
+
+          if (!cancelConfirmed) {
+            return this.markRecoveryRequired(
+              executionId,
+              `Base HTLC is REFUNDED but Lightning invoice cancellation could not be authoritatively confirmed (current lnState: ${lnState}); reservation retained`,
+              'LIGHTNING_CANCEL_AMBIGUOUS'
+            );
+          }
+
+          // Authoritative cancellation confirmed
+          if (record.reservationId && record.reservationStatus === 'COMMITTED') {
+            if (typeof (this.inventory as any).restoreRefund === 'function') {
+              await (this.inventory as any).restoreRefund(record.reservationId);
+            } else {
+              await this.inventory.release(record.reservationId);
+            }
+          } else if (record.reservationId && record.reservationStatus === 'RESERVED') {
             await this.inventory.release(record.reservationId);
           }
+
+          return this.updateRecord(
+            executionId,
+            {
+              state: SovereignAtomicState.REFUNDED,
+              reservationStatus: 'RELEASED',
+              holdInvoice: observedInvoice
+                ? { ...observedInvoice, state: 'CANCELED', canceledAt: authoritativeCanceledAt ?? observedInvoice.canceledAt ?? new Date() }
+                : record.holdInvoice
+                  ? { ...record.holdInvoice, state: 'CANCELED', canceledAt: authoritativeCanceledAt ?? record.holdInvoice.canceledAt ?? new Date() }
+                  : undefined,
+              recoveryRequired: false,
+              failureReason: undefined,
+            },
+            { reason: 'RECONCILED_FROM_AUTHORITATIVE_EVM_REFUNDED' }
+          );
         }
-        return this.updateRecord(
-          executionId,
-          {
-            state: SovereignAtomicState.REFUNDED,
-            reservationStatus: 'RELEASED',
-            holdInvoice: { ...record.holdInvoice!, state: 'CANCELED', canceledAt: new Date() },
-            recoveryRequired: false,
-            failureReason: undefined,
-          },
-          { reason: 'RECONCILED_FROM_AUTHORITATIVE_EVM_REFUNDED' }
-        );
+
+        if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
+          if (record.reservationId && record.reservationStatus === 'COMMITTED') {
+            if (typeof (this.inventory as any).restoreRefund === 'function') {
+              await (this.inventory as any).restoreRefund(record.reservationId);
+            } else {
+              await this.inventory.release(record.reservationId);
+            }
+          } else if (record.reservationId && record.reservationStatus === 'RESERVED') {
+            await this.inventory.release(record.reservationId);
+          }
+
+          return this.updateRecord(
+            executionId,
+            {
+              state: SovereignAtomicState.REFUNDED,
+              reservationStatus: 'RELEASED',
+              holdInvoice: observedInvoice
+                ? { ...observedInvoice, state: 'CANCELED', canceledAt: observedInvoice.canceledAt ?? new Date() }
+                : record.holdInvoice
+                  ? { ...record.holdInvoice, state: 'CANCELED', canceledAt: record.holdInvoice.canceledAt ?? new Date() }
+                  : undefined,
+              recoveryRequired: false,
+              failureReason: undefined,
+            },
+            { reason: 'RECONCILED_FROM_AUTHORITATIVE_EVM_REFUNDED' }
+          );
+        }
       }
 
+      // =========================================================================
       // CASE 4: Base HTLC is LOCKED (funded) on-chain
-      if (evmState && evmState.funded && !evmState.completed && !evmState.refunded) {
+      // =========================================================================
+      if (isBaseFunded) {
         // CASE G: Lightning = CANCELED (or NOT_FOUND) and Base = FUNDED / LOCKED
         if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
           return this.markRecoveryRequired(
@@ -1451,7 +1541,16 @@ export class AtomicCoordinator {
           );
         }
 
-        if (evmState.blockTimestamp >= evmState.timelock) {
+        // Base = FUNDED and Lightning = OPEN
+        if (lnState === 'OPEN') {
+          return this.markRecoveryRequired(
+            executionId,
+            'CRITICAL_INVARIANT_VIOLATION: Base HTLC is FUNDED but Lightning invoice is OPEN; reservation retained',
+            'CROSS_RAIL_INVARIANT_VIOLATION'
+          );
+        }
+
+        if (evmState && evmState.blockTimestamp >= evmState.timelock) {
           // Timelock expired -> resume refund
           try {
             return await this.processRefund(executionId, workerId);
