@@ -349,6 +349,7 @@ export function isNonTerminalSovereignAtomicState(state: SovereignAtomicState): 
   return !TERMINAL_SOVEREIGN_ATOMIC_STATES.has(state);
 }
 
+
 export interface SovereignExecutionRecord {
   id: string;
   idempotencyKey: string;
@@ -381,6 +382,10 @@ export interface SovereignExecutionRecord {
   recoveryRequired?: boolean | undefined;
   failureReason?: string | undefined;
   retryCount?: number | undefined;
+  fundRetryCount?: number | undefined;
+  settleRetryCount?: number | undefined;
+  refundRetryCount?: number | undefined;
+  cancelRetryCount?: number | undefined;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -261,6 +261,10 @@ export class SqlitePersistence {
         recovery_required INTEGER NOT NULL DEFAULT 0,
         failure_reason TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
+        fund_retry_count INTEGER NOT NULL DEFAULT 0,
+        settle_retry_count INTEGER NOT NULL DEFAULT 0,
+        refund_retry_count INTEGER NOT NULL DEFAULT 0,
+        cancel_retry_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -322,6 +326,19 @@ export class SqlitePersistence {
       );
     `);
 
+    // Safe additive migrations for action-scoped retry counters
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN fund_retry_count INTEGER NOT NULL DEFAULT 0;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN settle_retry_count INTEGER NOT NULL DEFAULT 0;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN refund_retry_count INTEGER NOT NULL DEFAULT 0;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE sovereign_swaps ADD COLUMN cancel_retry_count INTEGER NOT NULL DEFAULT 0;');
+    } catch {}
     // Safe additive migrations for existing DB
     try {
       this.db.exec('ALTER TABLE executions ADD COLUMN order_token TEXT;');
@@ -1599,7 +1616,7 @@ export class SqlitePersistence {
         lightning_settled_at, lightning_canceled_at, lightning_expiry_height, evm_swap_key, evm_htlc_id,
         evm_funding_tx_hash, evm_claim_tx_hash, evm_refund_tx_hash, destination_tx_hash,
         action_in_flight, action_claimed_by, action_claimed_at, recovery_required,
-        failure_reason, retry_count, created_at, updated_at
+        failure_reason, retry_count, fund_retry_count, settle_retry_count, refund_retry_count, cancel_retry_count, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?,
         ?, ?, ?,
@@ -1609,7 +1626,7 @@ export class SqlitePersistence {
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?
       )
     `);
 
@@ -1653,6 +1670,10 @@ export class SqlitePersistence {
       record.recoveryRequired ? 1 : 0,
       record.failureReason ?? null,
       record.retryCount ?? 0,
+      record.fundRetryCount ?? 0,
+      record.settleRetryCount ?? 0,
+      record.refundRetryCount ?? 0,
+      record.cancelRetryCount ?? 0,
       nowIso,
       updatedIso
     );
@@ -1818,6 +1839,22 @@ export class SqlitePersistence {
     if (updates.retryCount !== undefined) {
       setClauses.push('retry_count = ?');
       values.push(updates.retryCount);
+    }
+    if (updates.fundRetryCount !== undefined) {
+      setClauses.push('fund_retry_count = ?');
+      values.push(updates.fundRetryCount);
+    }
+    if (updates.settleRetryCount !== undefined) {
+      setClauses.push('settle_retry_count = ?');
+      values.push(updates.settleRetryCount);
+    }
+    if (updates.refundRetryCount !== undefined) {
+      setClauses.push('refund_retry_count = ?');
+      values.push(updates.refundRetryCount);
+    }
+    if (updates.cancelRetryCount !== undefined) {
+      setClauses.push('cancel_retry_count = ?');
+      values.push(updates.cancelRetryCount);
     }
 
     values.push(id);
@@ -2010,6 +2047,10 @@ export class SqlitePersistence {
       recoveryRequired: Number(row.recovery_required || 0) === 1,
       failureReason: (row.failure_reason as string) || undefined,
       retryCount: Number(row.retry_count || 0),
+      fundRetryCount: Number(row.fund_retry_count || 0),
+      settleRetryCount: Number(row.settle_retry_count || 0),
+      refundRetryCount: Number(row.refund_retry_count || 0),
+      cancelRetryCount: Number(row.cancel_retry_count || 0),
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
     };

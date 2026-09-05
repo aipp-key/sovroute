@@ -497,33 +497,78 @@ export class ChainInventoryReconciler {
 
       // Status 1: LOCKED (active funded HTLC) -> ensure reservation committed and swap advanced
       if (status === 1) {
-        if (swap.reservationId) {
-          try {
-            this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
-          } catch (err: any) {
-            this.persistence.markSovereignRecoveryRequired(
-              swap.id,
-              `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is LOCKED but reservation commit failed (${err?.message ?? err}); economic inconsistency`,
-              'RESERVATION_COMMIT_FAILED'
-            );
-            throw new Error(
-              `ACTIVE_SWAP_RECONCILIATION_FAILED: Swap ${swap.id} reservation commit failed for locked HTLC: ${err?.message ?? err}`
-            );
-          }
-        } else if (swap.state === SovereignAtomicState.EVM_FUNDING_PENDING) {
-          this.persistence.updateSovereignSwap(swap.id, {
-            state: SovereignAtomicState.EVM_FUNDED,
-            reservationStatus: 'COMMITTED',
-          });
+        if (!swap.reservationId) {
+          this.persistence.markSovereignRecoveryRequired(
+            swap.id,
+            `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is LOCKED but swap has no reservationId; economic inconsistency`,
+            'MISSING_RESERVATION_ID'
+          );
+          throw new Error(
+            `ACTIVE_SWAP_RECONCILIATION_FAILED: MISSING_RESERVATION_ID: Swap ${swap.id} has no reservationId for locked onchain HTLC`
+          );
+        }
+        try {
+          this.persistence.commitReservationAndAdvanceSwapToFunded(swap.reservationId, swap.id);
+        } catch (err: any) {
+          this.persistence.markSovereignRecoveryRequired(
+            swap.id,
+            `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is LOCKED but reservation commit failed (${err?.message ?? err}); economic inconsistency`,
+            'RESERVATION_COMMIT_FAILED'
+          );
+          throw new Error(
+            `ACTIVE_SWAP_RECONCILIATION_FAILED: Swap ${swap.id} reservation commit failed for locked HTLC: ${err?.message ?? err}`
+          );
         }
       }
       // Status 2: CLAIMED onchain
-      else if (status === 2 && swap.reservationId) {
-        this.persistence.settleLiquidityReservation(swap.reservationId);
+      else if (status === 2) {
+        if (!swap.reservationId) {
+          this.persistence.markSovereignRecoveryRequired(
+            swap.id,
+            `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is CLAIMED but swap has no reservationId; economic inconsistency`,
+            'MISSING_RESERVATION_ID'
+          );
+          throw new Error(
+            `ACTIVE_SWAP_RECONCILIATION_FAILED: MISSING_RESERVATION_ID: Swap ${swap.id} has no reservationId for claimed onchain HTLC`
+          );
+        }
+        try {
+          this.persistence.settleLiquidityReservation(swap.reservationId);
+        } catch (err: any) {
+          this.persistence.markSovereignRecoveryRequired(
+            swap.id,
+            `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is CLAIMED but reservation settle failed (${err?.message ?? err}); economic inconsistency`,
+            'RESERVATION_SETTLE_FAILED'
+          );
+          throw new Error(
+            `ACTIVE_SWAP_RECONCILIATION_FAILED: Swap ${swap.id} reservation settle failed for claimed HTLC: ${err?.message ?? err}`
+          );
+        }
       }
       // Status 3: REFUNDED onchain
-      else if (status === 3 && swap.reservationId) {
-        this.persistence.restoreRefundLiquidityReservation(swap.reservationId);
+      else if (status === 3) {
+        if (!swap.reservationId) {
+          this.persistence.markSovereignRecoveryRequired(
+            swap.id,
+            `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is REFUNDED but swap has no reservationId; economic inconsistency`,
+            'MISSING_RESERVATION_ID'
+          );
+          throw new Error(
+            `ACTIVE_SWAP_RECONCILIATION_FAILED: MISSING_RESERVATION_ID: Swap ${swap.id} has no reservationId for refunded onchain HTLC`
+          );
+        }
+        try {
+          this.persistence.restoreRefundLiquidityReservation(swap.reservationId);
+        } catch (err: any) {
+          this.persistence.markSovereignRecoveryRequired(
+            swap.id,
+            `CRITICAL_INVARIANT_VIOLATION: Onchain HTLC is REFUNDED but reservation refund restoration failed (${err?.message ?? err}); economic inconsistency`,
+            'RESERVATION_REFUND_RESTORE_FAILED'
+          );
+          throw new Error(
+            `ACTIVE_SWAP_RECONCILIATION_FAILED: Swap ${swap.id} reservation restore failed for refunded HTLC: ${err?.message ?? err}`
+          );
+        }
       }
     }
   }
@@ -587,6 +632,15 @@ export class ChainInventoryReconciler {
               } else {
                 this.persistence.commitLiquidityReservation(swap.reservationId);
               }
+            } else if (swap && !swap.reservationId) {
+              this.persistence.markSovereignRecoveryRequired(
+                swap.id,
+                `CRITICAL_INVARIANT_VIOLATION: Funding intent is CONFIRMED but swap has no reservationId; economic inconsistency`,
+                'MISSING_RESERVATION_ID'
+              );
+              throw new Error(
+                `UNRESOLVED_INTENT_RECONCILIATION_FAILED: MISSING_RESERVATION_ID: Swap ${swap.id} has no reservationId for confirmed intent`
+              );
             }
           } else if (
             outcome.status === 'REVERTED' ||

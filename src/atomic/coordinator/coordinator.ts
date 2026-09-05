@@ -1363,8 +1363,39 @@ export class AtomicCoordinator {
       if (lnState === 'SETTLED') {
         // CASE A: Lightning = SETTLED and Base = CLAIMED / completed
         if (isBaseClaimed) {
-          if (record.reservationId) {
-            this.persistence.settleLiquidityReservation(record.reservationId);
+          if (!record.reservationId) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but swap has no valid reservationId; economic inconsistency`,
+              'MISSING_RESERVATION_ID'
+            );
+          }
+          const isSqliteInventory =
+            this.inventory instanceof SqliteLiquidityInventory ||
+            typeof (this.inventory as any).getPersistence === 'function';
+
+          if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
+            try {
+              this.persistence.settleLiquidityReservation(record.reservationId);
+            } catch (settleErr: any) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation settlement failed (${settleErr?.message ?? settleErr}); economic inconsistency`,
+                'RESERVATION_SETTLE_FAILED'
+              );
+            }
+          } else {
+            try {
+              if (typeof (this.inventory as any).settle === 'function') {
+                await (this.inventory as any).settle(record.reservationId);
+              }
+            } catch (settleErr: any) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation settlement failed (${settleErr?.message ?? settleErr}); economic inconsistency`,
+                'RESERVATION_SETTLE_FAILED'
+              );
+            }
           }
           return this.updateRecord(
             executionId,
@@ -1439,7 +1470,7 @@ export class AtomicCoordinator {
         if (lnState === 'ACCEPTED') {
           // If we have claim evidence or can extract it, settle LND
           if (record.evmClaimTxHash) {
-            const currentRetries = record.retryCount ?? 0;
+            const currentRetries = record.settleRetryCount ?? 0;
             if (currentRetries >= this.maxRetries) {
               return this.markRecoveryRequired(
                 executionId,
@@ -1447,30 +1478,46 @@ export class AtomicCoordinator {
                 'MAX_RETRIES_EXCEEDED'
               );
             }
-            this.updateRecord(executionId, { retryCount: currentRetries + 1 });
+            this.updateRecord(executionId, {
+              settleRetryCount: currentRetries + 1,
+              retryCount: (record.retryCount ?? 0) + 1,
+            });
             try {
               return await this.settleLightningFromEvmClaim(executionId, record.evmClaimTxHash, workerId);
             } catch {
               // Settlement in progress or manual review needed
             }
           } else {
-            if (record.reservationId) {
-              const isSqliteInventory =
-                this.inventory instanceof SqliteLiquidityInventory ||
-                typeof (this.inventory as any).getPersistence === 'function';
+            if (!record.reservationId) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but swap has no valid reservationId; economic inconsistency`,
+                'MISSING_RESERVATION_ID'
+              );
+            }
+            const isSqliteInventory =
+              this.inventory instanceof SqliteLiquidityInventory ||
+              typeof (this.inventory as any).getPersistence === 'function';
 
-              if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
-                try {
-                  this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
-                } catch (commitErr: any) {
-                  return this.markRecoveryRequired(
-                    executionId,
-                    `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
-                    'RESERVATION_COMMIT_FAILED'
-                  );
-                }
-              } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
+            if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
+              try {
+                this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
+              } catch (commitErr: any) {
+                return this.markRecoveryRequired(
+                  executionId,
+                  `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                  'RESERVATION_COMMIT_FAILED'
+                );
+              }
+            } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
+              try {
                 await this.inventory.commit(record.reservationId);
+              } catch (commitErr: any) {
+                return this.markRecoveryRequired(
+                  executionId,
+                  `CRITICAL_INVARIANT_VIOLATION: Base HTLC is CLAIMED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                  'RESERVATION_COMMIT_FAILED'
+                );
               }
             }
             return this.updateRecord(
@@ -1495,7 +1542,7 @@ export class AtomicCoordinator {
       if (isBaseRefunded) {
         if (lnState === 'OPEN' || lnState === 'ACCEPTED') {
           const cleanHash = record.holdInvoice?.paymentHash ?? record.hashLock.replace(/^0x/, '').toLowerCase();
-          const currentRetries = record.retryCount ?? 0;
+          const currentRetries = record.cancelRetryCount ?? 0;
           if (currentRetries >= this.maxRetries) {
             return this.markRecoveryRequired(
               executionId,
@@ -1503,7 +1550,10 @@ export class AtomicCoordinator {
               'MAX_RETRIES_EXCEEDED'
             );
           }
-          this.updateRecord(executionId, { retryCount: currentRetries + 1 });
+          this.updateRecord(executionId, {
+            cancelRetryCount: currentRetries + 1,
+            retryCount: (record.retryCount ?? 0) + 1,
+          });
           let cancelConfirmed = false;
           let authoritativeCanceledAt: Date | undefined;
 
@@ -1535,13 +1585,20 @@ export class AtomicCoordinator {
           }
 
           // Authoritative cancellation confirmed
-          if (record.reservationId && record.reservationStatus === 'COMMITTED') {
+          if (!record.reservationId) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is REFUNDED but swap has no valid reservationId; economic inconsistency`,
+              'MISSING_RESERVATION_ID'
+            );
+          }
+          if (record.reservationStatus === 'COMMITTED') {
             if (typeof (this.inventory as any).restoreRefund === 'function') {
               await (this.inventory as any).restoreRefund(record.reservationId);
             } else {
               await this.inventory.release(record.reservationId);
             }
-          } else if (record.reservationId && record.reservationStatus === 'RESERVED') {
+          } else if (record.reservationStatus === 'RESERVED') {
             await this.inventory.release(record.reservationId);
           }
 
@@ -1563,13 +1620,20 @@ export class AtomicCoordinator {
         }
 
         if (lnState === 'CANCELED' || lightningObservation.kind === 'NOT_FOUND') {
-          if (record.reservationId && record.reservationStatus === 'COMMITTED') {
+          if (!record.reservationId) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is REFUNDED but swap has no valid reservationId; economic inconsistency`,
+              'MISSING_RESERVATION_ID'
+            );
+          }
+          if (record.reservationStatus === 'COMMITTED') {
             if (typeof (this.inventory as any).restoreRefund === 'function') {
               await (this.inventory as any).restoreRefund(record.reservationId);
             } else {
               await this.inventory.release(record.reservationId);
             }
-          } else if (record.reservationId && record.reservationStatus === 'RESERVED') {
+          } else if (record.reservationStatus === 'RESERVED') {
             await this.inventory.release(record.reservationId);
           }
 
@@ -1615,7 +1679,7 @@ export class AtomicCoordinator {
 
         if (evmState && evmState.blockTimestamp >= evmState.timelock) {
           // Timelock expired -> resume refund
-          const currentRetries = record.retryCount ?? 0;
+          const currentRetries = record.refundRetryCount ?? 0;
           if (currentRetries >= this.maxRetries) {
             return this.markRecoveryRequired(
               executionId,
@@ -1623,7 +1687,10 @@ export class AtomicCoordinator {
               'MAX_RETRIES_EXCEEDED'
             );
           }
-          this.updateRecord(executionId, { retryCount: currentRetries + 1 });
+          this.updateRecord(executionId, {
+            refundRetryCount: currentRetries + 1,
+            retryCount: (record.retryCount ?? 0) + 1,
+          });
           try {
             return await this.processRefund(executionId, workerId);
           } catch {
@@ -1631,23 +1698,36 @@ export class AtomicCoordinator {
           }
         } else {
           // Locked and waiting for claim or timelock
-          if (record.reservationId) {
-            const isSqliteInventory =
-              this.inventory instanceof SqliteLiquidityInventory ||
-              typeof (this.inventory as any).getPersistence === 'function';
+          if (!record.reservationId) {
+            return this.markRecoveryRequired(
+              executionId,
+              `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but swap has no valid reservationId; economic inconsistency`,
+              'MISSING_RESERVATION_ID'
+            );
+          }
+          const isSqliteInventory =
+            this.inventory instanceof SqliteLiquidityInventory ||
+            typeof (this.inventory as any).getPersistence === 'function';
 
-            if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
-              try {
-                this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
-              } catch (commitErr: any) {
-                return this.markRecoveryRequired(
-                  executionId,
-                  `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
-                  'RESERVATION_COMMIT_FAILED'
-                );
-              }
-            } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
+          if (isSqliteInventory || this.persistence.getLiquidityReservation(record.reservationId)) {
+            try {
+              this.persistence.commitReservationAndAdvanceSwapToFunded(record.reservationId, executionId);
+            } catch (commitErr: any) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                'RESERVATION_COMMIT_FAILED'
+              );
+            }
+          } else if (record.reservationStatus === 'RESERVED' || record.reservationStatus === undefined) {
+            try {
               await this.inventory.commit(record.reservationId);
+            } catch (commitErr: any) {
+              return this.markRecoveryRequired(
+                executionId,
+                `CRITICAL_INVARIANT_VIOLATION: Base HTLC is LOCKED but reservation commit failed (${commitErr?.message ?? commitErr}); economic inconsistency`,
+                'RESERVATION_COMMIT_FAILED'
+              );
             }
           }
           return this.updateRecord(
@@ -1712,7 +1792,7 @@ export class AtomicCoordinator {
               },
               { reason: 'RECONCILED_FROM_ACCEPTED_INVOICE_AND_EVM_ABSENCE' }
             );
-            const currentRetries = record.retryCount ?? 0;
+            const currentRetries = record.fundRetryCount ?? 0;
             if (currentRetries >= this.maxRetries) {
               return this.markRecoveryRequired(
                 executionId,
@@ -1720,7 +1800,10 @@ export class AtomicCoordinator {
                 'MAX_RETRIES_EXCEEDED'
               );
             }
-            this.updateRecord(executionId, { retryCount: currentRetries + 1 });
+            this.updateRecord(executionId, {
+              fundRetryCount: currentRetries + 1,
+              retryCount: (record.retryCount ?? 0) + 1,
+            });
             try {
               return await this.fundEvmHtlc(executionId, workerId);
             } catch {
@@ -1733,7 +1816,7 @@ export class AtomicCoordinator {
           // Only the pristine held state may begin funding. Pending/recovery
           // states require durable intent recovery and are never blindly retried.
           if (record.state === SovereignAtomicState.LIGHTNING_HELD) {
-            const currentRetries = record.retryCount ?? 0;
+            const currentRetries = record.fundRetryCount ?? 0;
             if (currentRetries >= this.maxRetries) {
               return this.markRecoveryRequired(
                 executionId,
@@ -1741,7 +1824,10 @@ export class AtomicCoordinator {
                 'MAX_RETRIES_EXCEEDED'
               );
             }
-            this.updateRecord(executionId, { retryCount: currentRetries + 1 });
+            this.updateRecord(executionId, {
+              fundRetryCount: currentRetries + 1,
+              retryCount: (record.retryCount ?? 0) + 1,
+            });
             try {
               return await this.fundEvmHtlc(executionId, workerId);
             } catch {
