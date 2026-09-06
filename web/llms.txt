@@ -1,0 +1,27 @@
+# SovRoute
+
+SovRoute is receiver-defined settlement infrastructure.
+
+Pay with what you have. Receive what you want.
+
+## Current route
+
+Lightning BTC -> Base USDC
+
+## Core properties
+
+- Recovery-aware execution
+- Trust-minimized settlement
+- Direct-to-wallet settlement
+- No custodial user balance
+- Self-hosted first
+
+## Product model
+
+Receiver defines the outcome. SovRoute determines the route.
+
+payer asset -> receiver preference -> route -> execution -> recovery -> settlement
+
+## Website
+
+https://sovroute.com/

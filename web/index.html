@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SovRoute — Receiver-Defined Settlement Infrastructure</title>
+    <meta name="description" content="Pay with what you have. Receive what you want. SovRoute is recovery-aware settlement infrastructure, starting with Lightning BTC to Base USDC.">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://sovroute.com/">
+
+    <!-- OpenGraph Metadata -->
+    <meta property="og:title" content="SovRoute — Receiver-Defined Settlement Infrastructure">
+    <meta property="og:description" content="Trust-minimized settlement infrastructure starting with Lightning BTC to Base USDC.">
+    <meta property="og:url" content="https://sovroute.com/">
+    <meta property="og:type" content="website">
+
+    <!-- Twitter/X Metadata -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="SovRoute — Receiver-Defined Settlement Infrastructure">
+    <meta name="twitter:description" content="Trust-minimized settlement infrastructure starting with Lightning BTC to Base USDC.">
+
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --text-mono: #94a3b8;
+            --border-light: #e2e8f0;
+            --accent-blue: #2563eb;
+            --accent-blue-border: #bfdbfe;
+            --content-max-width: 900px;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto !important; }
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            font-size: 16px;
+            position: relative;
+        }
+
+        /* Subtle Technical Grid Background */
+        body::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image: radial-gradient(var(--text-mono) 1px, transparent 1px);
+            background-size: 24px 24px;
+            opacity: 0.40;
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            font-size: 17px;
+        }
+
+        .container {
+            max-width: var(--content-max-width);
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        svg {
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 1.6;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        h1, h2, h3 {
+            color: var(--text-main);
+            margin: 0;
+        }
+
+        /* Header / Hero */
+        header {
+            text-align: center;
+            padding-top: 64px;
+            padding-bottom: 48px;
+        }
+
+        .eyebrow {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.75rem;
+            color: var(--text-mono);
+            margin-bottom: 16px;
+            display: inline-block;
+            letter-spacing: 0.02em;
+        }
+
+        h1.logo {
+            font-size: 2.125rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-desc {
+            font-size: 1rem;
+            color: var(--text-muted);
+            margin: 0 auto 12px auto;
+            max-width: 560px;
+            line-height: 1.45;
+        }
+
+        .hero-sub {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.75rem;
+            color: var(--text-mono);
+            margin-bottom: 32px;
+            letter-spacing: 0.01em;
+        }
+
+        .cta-group {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 40px;
+            padding: 0 16px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            text-decoration: none;
+            border-radius: 8px;
+            transition: border-color 0.15s ease, background-color 0.15s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--accent-blue);
+            color: white;
+            border: 1px solid var(--accent-blue);
+        }
+
+        .btn-primary:hover { 
+            background-color: #1d4ed8; 
+            border-color: #1d4ed8; 
+        }
+
+        .btn-primary:focus-visible { 
+            outline: 2px solid var(--accent-blue); 
+            outline-offset: 2px; 
+        }
+
+        .btn-secondary {
+            background-color: white;
+            color: var(--text-main);
+            border: 1px solid var(--border-light);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+        }
+
+        .btn-secondary:hover { 
+            background-color: #f8fafc; 
+            border-color: #cbd5e1; 
+        }
+
+        .btn-secondary:focus-visible { 
+            outline: 2px solid var(--text-main); 
+            outline-offset: 2px; 
+        }
+
+        section {
+            padding-bottom: 48px;
+        }
+
+        .section-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 32px;
+            text-align: center;
+            letter-spacing: -0.01em;
+        }
+
+        /* Products Grid */
+        #products {
+            padding-bottom: 36px; /* Tighter gap to Why SovRoute */
+        }
+
+        .products-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }
+
+        .card {
+            padding: 24px;
+            border: 1px solid var(--border-light);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            text-align: left;
+            background-color: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.01);
+        }
+
+        .card.primary {
+            border-color: var(--accent-blue-border);
+            background-color: #ffffff;
+            box-shadow: 0 0 0 1px var(--accent-blue-border), 0 2px 4px rgba(0,0,0,0.01);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .card-title-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-icon {
+            width: 18px;
+            height: 18px;
+            color: var(--text-mono);
+        }
+        
+        .card.primary .card-icon {
+            color: var(--accent-blue);
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+        }
+
+        .badge {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            background-color: white;
+            border: 1px solid var(--border-light);
+            color: var(--text-muted);
+            letter-spacing: 0.01em;
+        }
+
+        .card.primary .badge {
+            color: var(--accent-blue);
+            border-color: var(--accent-blue-border);
+        }
+
+        .card-text {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+            line-height: 1.5;
+            flex-grow: 1;
+        }
+
+        .card-strong {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-main);
+            margin-bottom: 16px;
+            display: block;
+        }
+
+        .card-footer {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.75rem;
+            color: var(--text-mono);
+            text-transform: lowercase;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-light);
+        }
+
+        .card.primary .card-footer {
+            border-top-color: var(--accent-blue-border);
+        }
+
+        /* Features Grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            max-width: 560px;
+            margin: 0 auto;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            font-size: 0.875rem;
+        }
+
+        .feature-icon {
+            width: 16px;
+            height: 16px;
+            color: var(--text-mono);
+            flex-shrink: 0;
+        }
+
+        .feature-text {
+            color: var(--text-main);
+            font-weight: 500;
+        }
+
+        /* Flow / How it works */
+        .flow-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .flow-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            text-align: center;
+            width: 160px;
+        }
+        
+        .flow-step .step-icon {
+            width: 20px;
+            height: 20px;
+            color: var(--text-main);
+        }
+
+        .step-text {
+            font-size: 0.875rem;
+            color: var(--text-main);
+            font-weight: 500;
+            line-height: 1.4;
+        }
+        
+        .flow-connector {
+            width: 1px;
+            height: 24px;
+            background-color: var(--border-light);
+        }
+
+        .flow-note {
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        /* Architecture */
+        .arch-section {
+            text-align: center;
+            padding-bottom: 64px;
+        }
+
+        .arch-body {
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 16px;
+            color: var(--text-main);
+        }
+
+        .arch-flow-wrapper {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #ffffff;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.01);
+        }
+
+        .arch-flow {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.75rem;
+            color: var(--text-mono);
+            letter-spacing: 0.02em;
+        }
+
+        /* Footer */
+        footer {
+            padding: 32px 0;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            background-color: var(--bg-color);
+        }
+
+        .footer-top {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            font-size: 0.875rem;
+        }
+
+        .footer-logo {
+            font-weight: 600;
+            letter-spacing: -0.01em;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+        }
+
+        .footer-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.15s ease;
+        }
+
+        .footer-links a:hover {
+            color: var(--text-main);
+        }
+
+        .footer-bottom {
+            font-size: 0.75rem;
+            color: var(--text-mono);
+            width: 100%;
+            text-align: left;
+        }
+
+        /* Responsive */
+        @media (min-width: 768px) {
+            .products-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+            .features-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 24px 64px;
+            }
+            .feature-item {
+                justify-content: flex-start;
+            }
+            .flow-container {
+                flex-direction: row;
+                justify-content: center;
+                align-items: flex-start;
+                gap: 0;
+            }
+            .flow-connector {
+                width: auto;
+                flex-grow: 1;
+                height: 1px;
+                margin-top: 10px; /* Optically center with 20px icon */
+            }
+        }
+    </style>
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "SovRoute",
+      "applicationCategory": "DeveloperApplication",
+      "description": "Receiver-defined settlement infrastructure. Trust-minimized settlement starting with Lightning BTC to Base USDC.",
+      "url": "https://sovroute.com/"
+    }
+    </script>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <span class="eyebrow">receiver-defined settlement &middot; lightning &leftrightarrow; base</span>
+            <h1 class="logo">SovRoute</h1>
+            <p class="hero-desc">Trust-minimized settlement infrastructure. Self-host it, use a managed API later, or embed it in your product.</p>
+            <p class="hero-sub">recovery-first &middot; direct-to-wallet &middot; self-hosted first</p>
+            
+            <div class="cta-group">
+                <a href="#architecture" class="btn btn-primary">View architecture</a>
+                <a href="#how-it-works" class="btn btn-secondary">How it works</a>
+            </div>
+        </header>
+
+        <main>
+            <section id="products">
+                <div class="products-grid">
+                    <div class="card primary">
+                        <div class="card-header">
+                            <div class="card-title-group">
+                                <svg class="card-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="16" x2="6.01" y2="16"/></svg>
+                                <h2 class="card-title">Sovereign</h2>
+                            </div>
+                            <span class="badge">Primary</span>
+                        </div>
+                        <p class="card-text">Run SovRoute on your own Bitcoin Core, LND and Base infrastructure.</p>
+                        <span class="card-strong">Self-hosted first. Full control.</span>
+                        <div class="card-footer">self-hosted</div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title-group">
+                                <svg class="card-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                                <h2 class="card-title">Hosted</h2>
+                            </div>
+                            <span class="badge">Coming later</span>
+                        </div>
+                        <p class="card-text">A managed execution API. No infrastructure to run yourself.</p>
+                        <div class="card-footer">usage-based, tba</div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title-group">
+                                <svg class="card-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                                <h2 class="card-title">Embedded / OEM</h2>
+                            </div>
+                        </div>
+                        <p class="card-text">Embed SovRoute inside your wallet, fintech or agent product.</p>
+                        <div class="card-footer">commercial license</div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="features">
+                <h2 class="section-title">Why SovRoute</h2>
+                <div class="features-grid">
+                    <div class="feature-item">
+                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        <span class="feature-text">Non-custodial by design</span>
+                    </div>
+                    <div class="feature-item">
+                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
+                        <span class="feature-text">Deterministic recovery model</span>
+                    </div>
+                    <div class="feature-item">
+                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><line x1="9" y1="15" x2="21" y2="3"/><polyline points="9 21 3 21 3 15"/><line x1="15" y1="9" x2="3" y2="21"/></svg>
+                        <span class="feature-text">Lightning to Base execution</span>
+                    </div>
+                    <div class="feature-item">
+                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-11"/><rect x="9" y="18" width="6" height="6"/></svg>
+                        <span class="feature-text">Self-hosted first</span>
+                    </div>
+                </div>
+            </section>
+
+            <section id="how-it-works">
+                <h2 class="section-title">How it works</h2>
+                <div class="flow-container">
+                    <div class="flow-step">
+                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        <span class="step-text">Fund Lightning hold invoice</span>
+                    </div>
+                    <div class="flow-connector" aria-hidden="true"></div>
+                    <div class="flow-step">
+                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                        <span class="step-text">Lock matching USDC on Base</span>
+                    </div>
+                    <div class="flow-connector" aria-hidden="true"></div>
+                    <div class="flow-step">
+                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                        <span class="step-text">Claim reveals preimage</span>
+                    </div>
+                    <div class="flow-connector" aria-hidden="true"></div>
+                    <div class="flow-step">
+                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                        <span class="step-text">Lightning settles</span>
+                    </div>
+                </div>
+                <p class="flow-note">If claim doesn't happen, refund path is deterministic.</p>
+            </section>
+
+            <section id="architecture" class="arch-section">
+                <p class="arch-body">Receiver defines the outcome. SovRoute determines the route.</p>
+                <div class="arch-flow-wrapper">
+                    <div class="arch-flow" aria-label="Route flow: payer asset to receiver preference to route to execution to recovery to settlement">
+                        payer asset &rarr; receiver preference &rarr; route &rarr; execution &rarr; recovery &rarr; settlement
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <div class="footer-top">
+                <span class="footer-logo">SovRoute</span>
+                <div class="footer-links">
+                    <a href="#architecture">Architecture</a>
+                    <a href="#how-it-works">How it works</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                &copy; 2026 SovRoute
+            </div>
+        </footer>
+    </div>
+
+</body>
+</html>
