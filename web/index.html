@@ -470,17 +470,17 @@
            Interactive Swap Widget & Settlement Pipeline Styles
            ========================================================== */
         .swap-section {
-            padding-bottom: 56px;
+            padding-bottom: 64px;
         }
 
         .swap-card {
-            max-width: 520px;
+            max-width: 540px;
             margin: 0 auto;
             background-color: #ffffff;
             border: 1px solid var(--border-light);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 4px 24px -4px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+            border-radius: 20px;
+            padding: 30px 28px;
+            box-shadow: 0 10px 30px -5px rgba(15, 23, 42, 0.07), 0 4px 6px -2px rgba(15, 23, 42, 0.03);
             position: relative;
         }
 
@@ -488,29 +488,29 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 20px;
-            padding-bottom: 14px;
+            margin-bottom: 22px;
+            padding-bottom: 16px;
             border-bottom: 1px solid var(--border-light);
             flex-wrap: wrap;
-            gap: 8px;
+            gap: 12px;
         }
 
         .swap-rate-indicator {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             font-family: ui-monospace, SFMono-Regular, monospace;
             font-size: 0.75rem;
             color: var(--text-muted);
             background: #f8fafc;
-            padding: 4px 10px;
+            padding: 6px 12px;
             border-radius: 9999px;
             border: 1px solid var(--border-light);
         }
 
         .status-dot {
-            width: 7px;
-            height: 7px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
             background-color: #10b981;
             box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
@@ -522,32 +522,115 @@
             50% { transform: scale(1.2); opacity: 0.7; }
         }
 
+        .swap-expiry-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 4px;
+            min-width: 105px;
+        }
+
         .swap-expiry-badge {
             font-family: ui-monospace, SFMono-Regular, monospace;
-            font-size: 0.6875rem;
-            color: var(--accent-blue);
-            background-color: #eff6ff;
-            border: 1px solid var(--accent-blue-border);
-            padding: 4px 8px;
-            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 5px 10px;
+            border-radius: 8px;
             display: inline-flex;
             align-items: center;
-            gap: 4px;
+            gap: 6px;
+            transition: all 0.3s ease;
+        }
+
+        .swap-expiry-badge.status-green {
+            color: #059669;
+            background-color: #ecfdf5;
+            border: 1px solid #a7f3d0;
+        }
+
+        .swap-expiry-badge.status-amber {
+            color: #d97706;
+            background-color: #fffbeb;
+            border: 1px solid #fde68a;
+        }
+
+        .swap-expiry-badge.status-red {
+            color: #dc2626;
+            background-color: #fef2f2;
+            border: 1px solid #fecaca;
+            animation: pulse-border 1s infinite alternate;
+        }
+
+        @keyframes pulse-border {
+            from { border-color: #fecaca; }
+            to { border-color: #ef4444; }
+        }
+
+        .swap-progress-track {
+            width: 100%;
+            height: 3px;
+            background-color: #e2e8f0;
+            border-radius: 9999px;
+            overflow: hidden;
+        }
+
+        .swap-progress-fill {
+            height: 100%;
+            width: 100%;
+            background-color: #10b981;
+            border-radius: 9999px;
+            transition: width 1s linear, background-color 0.3s ease;
         }
 
         .swap-field {
-            background-color: #f8fafc;
-            border: 1px solid var(--border-light);
-            border-radius: 12px;
-            padding: 14px 16px;
-            margin-bottom: 8px;
-            transition: border-color 0.15s ease, background-color 0.15s ease;
+            border-radius: 14px;
+            padding: 16px 18px;
+            transition: all 0.15s ease;
         }
 
-        .swap-field:focus-within {
+        .swap-field-pay {
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            margin-bottom: 10px;
+        }
+
+        .swap-field-pay:focus-within {
             border-color: var(--accent-blue);
             background-color: #ffffff;
-            box-shadow: 0 0 0 1px var(--accent-blue);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+        }
+
+        .swap-field-receive {
+            background: linear-gradient(180deg, #f0fdf4 0%, #fafffc 100%);
+            border: 1.5px solid #86efac;
+            margin-bottom: 18px;
+            box-shadow: 0 1px 3px rgba(16, 185, 129, 0.05);
+        }
+
+        .swap-field-receive:focus-within {
+            border-color: #10b981;
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+        }
+
+        .swap-field-receive .swap-input {
+            color: #047857;
+            font-weight: 700;
+        }
+
+        .testnet-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background-color: #fef3c7;
+            border: 1px solid #fcd34d;
+            color: #92400e;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.625rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            padding: 3px 8px;
+            border-radius: 6px;
+            text-transform: uppercase;
         }
 
         .swap-label-row {
@@ -601,8 +684,8 @@
 
         .swap-chips {
             display: flex;
-            gap: 6px;
-            margin-top: 10px;
+            gap: 8px;
+            margin-top: 12px;
             flex-wrap: wrap;
         }
 
@@ -610,10 +693,11 @@
             background: #ffffff;
             border: 1px solid var(--border-light);
             color: var(--text-muted);
-            font-size: 0.6875rem;
+            font-size: 0.75rem;
             font-family: ui-monospace, SFMono-Regular, monospace;
-            padding: 2px 8px;
-            border-radius: 6px;
+            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 8px;
             cursor: pointer;
             transition: all 0.15s ease;
         }
@@ -621,6 +705,15 @@
         .swap-chip:hover {
             border-color: var(--accent-blue);
             color: var(--accent-blue);
+            background-color: #eff6ff;
+        }
+
+        .swap-chip.active {
+            background-color: var(--accent-blue);
+            color: #ffffff;
+            border-color: var(--accent-blue);
+            font-weight: 600;
+            box-shadow: 0 1px 3px rgba(37, 99, 235, 0.25);
         }
 
         .swap-divider-wrap {
@@ -647,15 +740,15 @@
         }
 
         .swap-address-group {
-            margin-top: 12px;
-            margin-bottom: 16px;
+            margin-top: 18px;
+            margin-bottom: 20px;
         }
 
         .swap-address-label-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 6px;
+            margin-bottom: 8px;
             font-size: 0.75rem;
             color: var(--text-muted);
             font-family: ui-monospace, SFMono-Regular, monospace;
@@ -663,7 +756,7 @@
 
         .swap-address-actions {
             display: flex;
-            gap: 8px;
+            gap: 10px;
         }
 
         .swap-mini-link {
@@ -671,39 +764,56 @@
             border: none;
             color: var(--accent-blue);
             font-size: 0.6875rem;
+            font-weight: 500;
             cursor: pointer;
             text-decoration: underline;
             padding: 0;
             font-family: inherit;
         }
 
+        .swap-address-input-wrap {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .swap-address-icon {
+            position: absolute;
+            left: 12px;
+            width: 16px;
+            height: 16px;
+            color: #64748b;
+            pointer-events: none;
+        }
+
         .swap-address-input {
             width: 100%;
-            padding: 10px 12px;
-            background-color: #f8fafc;
-            border: 1px solid var(--border-light);
-            border-radius: 8px;
+            padding: 12px 14px 12px 36px;
+            background-color: #ffffff;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 10px;
             font-family: ui-monospace, SFMono-Regular, monospace;
             font-size: 0.8125rem;
-            color: var(--text-main);
+            font-weight: 600;
+            color: #0f172a;
             outline: none;
-            transition: border-color 0.15s ease;
+            transition: all 0.15s ease;
         }
 
         .swap-address-input:focus {
             border-color: var(--accent-blue);
-            background-color: #ffffff;
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
         }
 
         .swap-limits-banner {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 8px;
+            gap: 10px;
             background-color: #f8fafc;
             border: 1px solid var(--border-light);
-            border-radius: 8px;
-            padding: 10px 12px;
-            margin-bottom: 16px;
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-bottom: 22px;
             text-align: center;
         }
 
@@ -729,12 +839,12 @@
 
         .swap-action-btn {
             width: 100%;
-            height: 46px;
+            height: 50px;
             background-color: var(--accent-blue);
             color: #ffffff;
             border: none;
-            border-radius: 10px;
-            font-size: 0.9375rem;
+            border-radius: 12px;
+            font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
             display: flex;
@@ -973,14 +1083,19 @@
                             <span class="status-dot"></span>
                             <span id="rate-text">1 BTC &asymp; $78,500 USDC</span>
                         </div>
-                        <div class="swap-expiry-badge">
-                            <svg width="12" height="12" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            <span id="countdown-text">Quote 20s</span>
+                        <div class="swap-expiry-wrap">
+                            <div id="expiry-badge" class="swap-expiry-badge status-green">
+                                <svg width="12" height="12" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                <span id="countdown-text">Quote 20s</span>
+                            </div>
+                            <div class="swap-progress-track">
+                                <div id="progress-fill" class="swap-progress-fill" style="width: 100%;"></div>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Pay Input -->
-                    <div class="swap-field">
+                    <div class="swap-field swap-field-pay">
                         <div class="swap-label-row">
                             <span>You Pay</span>
                             <span id="usd-equiv">&asymp; $39.25 USD</span>
@@ -994,7 +1109,7 @@
                         </div>
                         <div class="swap-chips">
                             <button type="button" class="swap-chip" data-sats="25000">25,000</button>
-                            <button type="button" class="swap-chip" data-sats="50000">50,000</button>
+                            <button type="button" class="swap-chip active" data-sats="50000">50,000</button>
                             <button type="button" class="swap-chip" data-sats="100000">100,000</button>
                             <button type="button" class="swap-chip" data-sats="250000">250,000</button>
                         </div>
@@ -1008,10 +1123,10 @@
                     </div>
 
                     <!-- Receive Output -->
-                    <div class="swap-field">
+                    <div class="swap-field swap-field-receive">
                         <div class="swap-label-row">
                             <span>You Receive</span>
-                            <span>Base Sepolia</span>
+                            <span class="testnet-badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 2 22 22 22 12 2"/></svg> TESTNET &middot; SEPOLIA</span>
                         </div>
                         <div class="swap-input-row">
                             <input type="text" id="usdc-output" class="swap-input" value="39.05" readonly aria-label="USDC Amount">
@@ -1020,9 +1135,9 @@
                                 Base USDC
                             </div>
                         </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.6875rem; color: var(--text-mono); font-family: ui-monospace, monospace; margin-top: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.6875rem; color: var(--text-mono); font-family: ui-monospace, monospace; margin-top: 10px;">
                             <span id="fee-text">Fee: 0.50% (250 sats)</span>
-                            <span>Gas: $0.00 (Relayer)</span>
+                            <span style="color: #059669; font-weight: 500;">Gas: $0.00 (Sponsored)</span>
                         </div>
                     </div>
 
@@ -1035,8 +1150,11 @@
                                 <button type="button" class="swap-mini-link" id="btn-connect-wallet">Connect Wallet</button>
                             </div>
                         </div>
-                        <input type="text" id="destination-address" class="swap-address-input" placeholder="0x..." value="0x90F79bf6EB2c4f870365E785982E1f101E93b906" spellcheck="false">
-                        <div id="address-error" style="display: none; color: #ef4444; font-size: 0.6875rem; font-family: ui-monospace, monospace; margin-top: 4px;">Invalid EVM address format (must start with 0x and be 42 characters).</div>
+                        <div class="swap-address-input-wrap">
+                            <svg class="swap-address-icon" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="6" y1="16" x2="6.01" y2="16"/></svg>
+                            <input type="text" id="destination-address" class="swap-address-input" placeholder="0x..." value="0x90F79bf6EB2c4f870365E785982E1f101E93b906" spellcheck="false">
+                        </div>
+                        <div id="address-error" style="display: none; color: #ef4444; font-size: 0.6875rem; font-family: ui-monospace, monospace; margin-top: 6px;">Invalid EVM address format (must start with 0x and be 42 characters).</div>
                     </div>
 
                     <!-- Anti-Abuse Safety Limits Banner -->
@@ -1304,6 +1422,8 @@
             const rateText = document.getElementById('rate-text');
             const feeText = document.getElementById('fee-text');
             const countdownText = document.getElementById('countdown-text');
+            const expiryBadge = document.getElementById('expiry-badge');
+            const progressFill = document.getElementById('progress-fill');
             const destinationAddress = document.getElementById('destination-address');
             const addressError = document.getElementById('address-error');
             const limitError = document.getElementById('limit-error');
@@ -1408,7 +1528,44 @@
                 }
                 rateText.textContent = `1 BTC ≈ $${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC`;
                 secondsRemaining = 20;
+                updateCountdownDisplay();
                 recalculateQuote();
+            }
+
+            // Countdown Progress Bar & Visual Tone Shifting (Green -> Amber -> Red)
+            function updateCountdownDisplay() {
+                if (countdownText) {
+                    countdownText.textContent = `Quote ${secondsRemaining}s`;
+                }
+
+                const pct = Math.max(0, Math.min(100, (secondsRemaining / 20) * 100));
+                if (progressFill) {
+                    progressFill.style.width = `${pct}%`;
+                }
+
+                if (expiryBadge) {
+                    if (secondsRemaining > 10) {
+                        expiryBadge.className = 'swap-expiry-badge status-green';
+                        if (progressFill) progressFill.style.backgroundColor = '#10b981';
+                    } else if (secondsRemaining > 5) {
+                        expiryBadge.className = 'swap-expiry-badge status-amber';
+                        if (progressFill) progressFill.style.backgroundColor = '#f59e0b';
+                    } else {
+                        expiryBadge.className = 'swap-expiry-badge status-red';
+                        if (progressFill) progressFill.style.backgroundColor = '#ef4444';
+                    }
+                }
+            }
+
+            // Sync active chip selection visually
+            function updateActiveChip(satsVal) {
+                chips.forEach(function (chip) {
+                    if (parseInt(chip.dataset.sats, 10) === satsVal) {
+                        chip.classList.add('active');
+                    } else {
+                        chip.classList.remove('active');
+                    }
+                });
             }
 
             // Quote recalculation
@@ -1469,15 +1626,20 @@
                     secondsRemaining = 20;
                     fetchBtcPrice();
                 } else {
-                    countdownText.textContent = `Quote ${secondsRemaining}s`;
+                    updateCountdownDisplay();
                 }
             }, 1000);
 
             // Listeners for inputs
-            satsInput.addEventListener('input', recalculateQuote);
+            satsInput.addEventListener('input', function () {
+                updateActiveChip(parseInt(this.value, 10));
+                recalculateQuote();
+            });
             chips.forEach(function (chip) {
                 chip.addEventListener('click', function () {
-                    satsInput.value = this.dataset.sats;
+                    const s = parseInt(this.dataset.sats, 10);
+                    satsInput.value = s;
+                    updateActiveChip(s);
                     recalculateQuote();
                 });
             });
@@ -1725,6 +1887,8 @@
             });
 
             // Initial load
+            updateActiveChip(50000);
+            updateCountdownDisplay();
             fetchBtcPrice();
         })();
     </script>
