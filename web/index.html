@@ -1021,7 +1021,7 @@
                             </div>
                         </div>
                         <div style="display: flex; justify-content: space-between; font-size: 0.6875rem; color: var(--text-mono); font-family: ui-monospace, monospace; margin-top: 8px;">
-                            <span>Fee: 0.50% (250 sats)</span>
+                            <span id="fee-text">Fee: 0.50% (250 sats)</span>
                             <span>Gas: $0.00 (Relayer)</span>
                         </div>
                     </div>
@@ -1302,6 +1302,7 @@
             const usdcOutput = document.getElementById('usdc-output');
             const usdEquiv = document.getElementById('usd-equiv');
             const rateText = document.getElementById('rate-text');
+            const feeText = document.getElementById('fee-text');
             const countdownText = document.getElementById('countdown-text');
             const destinationAddress = document.getElementById('destination-address');
             const addressError = document.getElementById('address-error');
@@ -1414,15 +1415,22 @@
             function recalculateQuote() {
                 const sats = parseInt(satsInput.value, 10) || 0;
                 const grossUsd = (sats / 100000000) * btcPrice;
+                const feeSats = Math.round(sats * 0.005);
                 const feeUsd = grossUsd * 0.005; // 50 bps protocol spread
                 const netUsdc = Math.max(0, grossUsd - feeUsd);
 
-                usdEquiv.textContent = `≈ $${grossUsd.toFixed(2)} USD`;
-                usdcOutput.value = netUsdc.toFixed(2);
+                if (feeText) {
+                    feeText.textContent = `Fee: 0.50% (${feeSats.toLocaleString()} sats)`;
+                }
+
+                const decimals = (grossUsd < 1 && grossUsd > 0) ? 4 : 2;
+                usdEquiv.textContent = `≈ $${grossUsd.toFixed(decimals)} USD`;
+                usdcOutput.value = netUsdc.toFixed(decimals);
 
                 // Anti-Abuse Checks
                 if (sats < 5000) {
-                    limitError.textContent = 'Minimum deposit is 5,000 sats (~$3.90).';
+                    const minUsd = (5000 / 100000000) * btcPrice;
+                    limitError.textContent = `Minimum deposit is 5,000 sats (~$${minUsd.toFixed(2)}).`;
                     limitError.style.display = 'block';
                     btnInitiateSwap.disabled = true;
                     return;
