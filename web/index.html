@@ -194,30 +194,35 @@
 
         /* Products Grid */
         #products {
-            padding-bottom: 36px; /* Tighter gap to Why SovRoute */
+            padding-bottom: 56px;
         }
 
         .products-grid {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 16px;
+            gap: 20px;
         }
 
         .card {
-            padding: 24px;
+            padding: 26px;
             border: 1px solid var(--border-light);
-            border-radius: 12px;
+            border-radius: 16px;
             display: flex;
             flex-direction: column;
             text-align: left;
             background-color: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.01);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .card:hover {
+            box-shadow: 0 8px 16px -4px rgba(15, 23, 42, 0.06);
         }
 
         .card.primary {
             border-color: var(--accent-blue-border);
             background-color: #ffffff;
-            box-shadow: 0 0 0 1px var(--accent-blue-border), 0 2px 4px rgba(0,0,0,0.01);
+            box-shadow: 0 0 0 1px var(--accent-blue-border), 0 4px 12px rgba(37, 99, 235, 0.04);
         }
 
         .card-header {
@@ -234,8 +239,8 @@
         }
 
         .card-icon {
-            width: 18px;
-            height: 18px;
+            width: 20px;
+            height: 20px;
             color: var(--text-mono);
         }
         
@@ -244,7 +249,7 @@
         }
 
         .card-title {
-            font-size: 1rem;
+            font-size: 1.0625rem;
             font-weight: 600;
             letter-spacing: -0.01em;
         }
@@ -252,33 +257,71 @@
         .badge {
             font-family: ui-monospace, SFMono-Regular, monospace;
             font-size: 0.6875rem;
-            padding: 2px 8px;
+            padding: 3px 8px;
             border-radius: 9999px;
-            background-color: white;
+            background-color: #f8fafc;
             border: 1px solid var(--border-light);
             color: var(--text-muted);
             letter-spacing: 0.01em;
+            font-weight: 500;
         }
 
         .card.primary .badge {
             color: var(--accent-blue);
+            background-color: #eff6ff;
             border-color: var(--accent-blue-border);
+            font-weight: 600;
         }
 
         .card-text {
             font-size: 0.875rem;
             color: var(--text-muted);
-            margin-bottom: 24px;
-            line-height: 1.5;
+            margin-bottom: 16px;
+            line-height: 1.55;
             flex-grow: 1;
         }
 
         .card-strong {
             font-size: 0.875rem;
-            font-weight: 500;
+            font-weight: 600;
             color: var(--text-main);
             margin-bottom: 16px;
             display: block;
+        }
+
+        .card-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 38px;
+            border-radius: 8px;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            text-decoration: none;
+            margin-top: 12px;
+            transition: all 0.15s ease;
+        }
+
+        .card-btn-primary {
+            background-color: var(--accent-blue);
+            color: #ffffff;
+            border: 1px solid var(--accent-blue);
+        }
+
+        .card-btn-primary:hover {
+            background-color: #1d4ed8;
+        }
+
+        .card-btn-secondary {
+            background-color: #f8fafc;
+            color: var(--text-main);
+            border: 1px solid var(--border-light);
+        }
+
+        .card-btn-secondary:hover {
+            background-color: #f1f5f9;
+            border-color: #cbd5e1;
         }
 
         .card-footer {
@@ -286,7 +329,8 @@
             font-size: 0.75rem;
             color: var(--text-mono);
             text-transform: lowercase;
-            padding-top: 16px;
+            padding-top: 14px;
+            margin-top: 14px;
             border-top: 1px solid var(--border-light);
         }
 
@@ -294,175 +338,326 @@
             border-top-color: var(--accent-blue-border);
         }
 
-        /* Features Grid */
+        /* Features Section (Visual Contrast Band) */
+        #features {
+            background-color: #f8fafc;
+            border-top: 1px solid var(--border-light);
+            border-bottom: 1px solid var(--border-light);
+            padding: 56px 0;
+            margin: 0 -24px 56px -24px;
+            padding-left: 24px;
+            padding-right: 24px;
+        }
+
         .features-grid {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 20px;
-            max-width: 560px;
+            gap: 16px;
+            max-width: 860px;
             margin: 0 auto;
         }
 
-        .feature-item {
+        .feature-card {
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+            transition: border-color 0.15s ease;
+        }
+
+        .feature-card:hover {
+            border-color: #cbd5e1;
+        }
+
+        .feature-icon-box {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background-color: #eff6ff;
+            color: var(--accent-blue);
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 12px;
-            font-size: 0.875rem;
-        }
-
-        .feature-icon {
-            width: 16px;
-            height: 16px;
-            color: var(--text-mono);
             flex-shrink: 0;
+            border: 1px solid #dbeafe;
         }
 
-        .feature-text {
+        .feature-card-title {
+            font-size: 0.9375rem;
+            font-weight: 600;
             color: var(--text-main);
-            font-weight: 500;
+            margin-bottom: 4px;
         }
 
-        /* Flow / How it works */
-        .flow-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+        .feature-card-desc {
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+            line-height: 1.45;
+        }
+
+        /* Flow / How it works (Step Cards & Clear Progress) */
+        #how-it-works {
+            padding-bottom: 64px;
+        }
+
+        .how-grid {
+            display: grid;
+            grid-template-columns: 1fr;
             gap: 16px;
-            margin-bottom: 32px;
+            max-width: 860px;
+            margin: 0 auto 24px auto;
         }
 
-        .flow-step {
+        .how-card {
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            border-radius: 14px;
+            padding: 22px 18px;
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 12px;
             text-align: center;
-            width: 160px;
+            gap: 12px;
+            position: relative;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
         }
-        
-        .flow-step .step-icon {
-            width: 20px;
-            height: 20px;
+
+        .how-num {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            font-weight: 700;
+            background-color: #eff6ff;
+            color: var(--accent-blue);
+            padding: 2px 8px;
+            border-radius: 9999px;
+            border: 1px solid var(--accent-blue-border);
+        }
+
+        .how-icon-wrap {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
             color: var(--text-main);
         }
 
-        .step-text {
+        .how-title {
             font-size: 0.875rem;
+            font-weight: 600;
             color: var(--text-main);
-            font-weight: 500;
-            line-height: 1.4;
         }
-        
-        .flow-connector {
-            width: 1px;
-            height: 24px;
-            background-color: var(--border-light);
+
+        .how-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            line-height: 1.45;
         }
 
         .flow-note {
             font-size: 0.8125rem;
             color: var(--text-muted);
             text-align: center;
+            max-width: 600px;
+            margin: 0 auto;
         }
 
-        /* Architecture */
+        /* Architecture Terminal Block */
         .arch-section {
-            text-align: center;
             padding-bottom: 64px;
+            text-align: center;
         }
 
-        .arch-body {
-            font-size: 0.875rem;
-            font-weight: 500;
-            margin-bottom: 16px;
-            color: var(--text-main);
+        .terminal-box {
+            max-width: 760px;
+            margin: 20px auto 0 auto;
+            background-color: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.25);
+            text-align: left;
         }
 
-        .arch-flow-wrapper {
-            display: inline-block;
-            padding: 12px 24px;
-            background-color: #ffffff;
-            border: 1px solid var(--border-light);
-            border-radius: 8px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.01);
-        }
-
-        .arch-flow {
-            font-family: ui-monospace, SFMono-Regular, monospace;
-            font-size: 0.75rem;
-            color: var(--text-mono);
-            letter-spacing: 0.02em;
-        }
-
-        /* Footer */
-        footer {
-            padding: 32px 0;
-            border-top: 1px solid var(--border-light);
+        .terminal-header {
+            background-color: #1e293b;
+            padding: 10px 16px;
             display: flex;
-            flex-direction: column;
             align-items: center;
-            gap: 16px;
+            gap: 8px;
+            border-bottom: 1px solid #334155;
+        }
+
+        .terminal-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .dot-red { background-color: #ef4444; }
+        .dot-yellow { background-color: #f59e0b; }
+        .dot-green { background-color: #10b981; }
+
+        .terminal-tab-title {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            color: #94a3b8;
+            margin-left: 8px;
+        }
+
+        .terminal-body {
+            padding: 20px 24px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.8125rem;
+            line-height: 1.6;
+        }
+
+        .terminal-cmd {
+            color: #94a3b8;
+            margin-bottom: 14px;
+        }
+
+        .terminal-cmd-prompt {
+            color: #10b981;
+            font-weight: 600;
+        }
+
+        .terminal-cmd-text {
+            color: #f1f5f9;
+        }
+
+        .pipeline-flow {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 12px 16px;
+            background-color: #020617;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+        }
+
+        .pipeline-step {
+            color: #38bdf8;
+            font-weight: 600;
+        }
+
+        .pipeline-arrow {
+            color: #64748b;
+        }
+
+        /* Enhanced Multi-Column Footer */
+        footer {
+            padding: 48px 0 32px 0;
+            border-top: 1px solid var(--border-light);
             background-color: var(--bg-color);
         }
 
-        .footer-top {
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 32px;
+            margin-bottom: 36px;
+        }
+
+        .footer-brand {
             display: flex;
-            justify-content: space-between;
-            width: 100%;
-            font-size: 0.875rem;
+            flex-direction: column;
+            gap: 12px;
         }
 
         .footer-logo {
+            font-size: 1.125rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--text-main);
+        }
+
+        .footer-desc {
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+            max-width: 320px;
+        }
+
+        .footer-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            background-color: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            color: #059669;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            width: fit-content;
+        }
+
+        .footer-col-title {
+            font-size: 0.75rem;
             font-weight: 600;
-            letter-spacing: -0.01em;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-main);
+            margin-bottom: 14px;
         }
 
-        .footer-links {
+        .footer-links-list {
+            list-style: none;
             display: flex;
-            gap: 24px;
+            flex-direction: column;
+            gap: 10px;
         }
 
-        .footer-links a {
+        .footer-links-list a {
+            font-size: 0.8125rem;
             color: var(--text-muted);
             text-decoration: none;
             transition: color 0.15s ease;
         }
 
-        .footer-links a:hover {
-            color: var(--text-main);
+        .footer-links-list a:hover {
+            color: var(--accent-blue);
         }
 
-        .footer-bottom {
+        .footer-bottom-bar {
+            padding-top: 24px;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
             font-size: 0.75rem;
             color: var(--text-mono);
-            width: 100%;
-            text-align: left;
         }
 
-        /* Responsive */
+        /* Responsive Breakpoints */
         @media (min-width: 768px) {
             .products-grid {
                 grid-template-columns: repeat(3, 1fr);
             }
             .features-grid {
                 grid-template-columns: repeat(2, 1fr);
-                gap: 24px 64px;
+                gap: 20px;
             }
-            .feature-item {
-                justify-content: flex-start;
+            .how-grid {
+                grid-template-columns: repeat(4, 1fr);
+                gap: 14px;
             }
-            .flow-container {
+            .footer-grid {
+                grid-template-columns: 2fr 1fr 1fr;
+            }
+            .footer-bottom-bar {
                 flex-direction: row;
-                justify-content: center;
-                align-items: flex-start;
-                gap: 0;
-            }
-            .flow-connector {
-                width: auto;
-                flex-grow: 1;
-                height: 1px;
-                margin-top: 10px; /* Optically center with 20px icon */
+                justify-content: space-between;
+                align-items: center;
             }
         }
 
@@ -1194,6 +1389,7 @@
                         </div>
                         <p class="card-text">Run SovRoute on your own Bitcoin Core, LND and Base infrastructure.</p>
                         <span class="card-strong">Self-hosted first. Full control.</span>
+                        <a href="https://github.com/sovroute/sovroute" target="_blank" rel="noopener noreferrer" class="card-btn card-btn-primary">View GitHub Repo &rarr;</a>
                         <div class="card-footer">self-hosted</div>
                     </div>
 
@@ -1206,6 +1402,7 @@
                             <span class="badge">Coming later</span>
                         </div>
                         <p class="card-text">A managed execution API. No infrastructure to run yourself.</p>
+                        <a href="#contact" class="card-btn card-btn-secondary">Join Hosted Waitlist &rarr;</a>
                         <div class="card-footer">usage-based, tba</div>
                     </div>
 
@@ -1217,6 +1414,7 @@
                             </div>
                         </div>
                         <p class="card-text">Embed SovRoute inside your wallet, fintech or agent product.</p>
+                        <a href="#contact" class="card-btn card-btn-secondary">Inquire Integration &rarr;</a>
                         <div class="card-footer">commercial license</div>
                     </div>
                 </div>
@@ -1225,72 +1423,148 @@
             <section id="features">
                 <h2 class="section-title">Why SovRoute</h2>
                 <div class="features-grid">
-                    <div class="feature-item">
-                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                        <span class="feature-text">Non-custodial by design</span>
+                    <div class="feature-card">
+                        <div class="feature-icon-box">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        </div>
+                        <div>
+                            <div class="feature-card-title">Non-custodial by design</div>
+                            <div class="feature-card-desc">Funds never sit in an operator pool or shared hot wallet. Cryptographic hold invoices ensure your sovereignty.</div>
+                        </div>
                     </div>
-                    <div class="feature-item">
-                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
-                        <span class="feature-text">Deterministic recovery model</span>
+                    <div class="feature-card">
+                        <div class="feature-icon-box">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
+                        </div>
+                        <div>
+                            <div class="feature-card-title">Deterministic recovery model</div>
+                            <div class="feature-card-desc">Onchain timelocks enforce automatic refund paths. If counterparty drops offline, your assets are guaranteed to return.</div>
+                        </div>
                     </div>
-                    <div class="feature-item">
-                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><line x1="9" y1="15" x2="21" y2="3"/><polyline points="9 21 3 21 3 15"/><line x1="15" y1="9" x2="3" y2="21"/></svg>
-                        <span class="feature-text">Lightning to Base execution</span>
+                    <div class="feature-card">
+                        <div class="feature-icon-box">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><line x1="9" y1="15" x2="21" y2="3"/><polyline points="9 21 3 21 3 15"/><line x1="15" y1="9" x2="3" y2="21"/></svg>
+                        </div>
+                        <div>
+                            <div class="feature-card-title">Lightning to Base execution</div>
+                            <div class="feature-card-desc">Sub-second Bitcoin Lightning payment resolves into immediate USDC delivery on Base L2 via HTLC atomic swap.</div>
+                        </div>
                     </div>
-                    <div class="feature-item">
-                        <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-11"/><rect x="9" y="18" width="6" height="6"/></svg>
-                        <span class="feature-text">Self-hosted first</span>
+                    <div class="feature-card">
+                        <div class="feature-icon-box">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-11"/><rect x="9" y="18" width="6" height="6"/></svg>
+                        </div>
+                        <div>
+                            <div class="feature-card-title">Self-hosted first</div>
+                            <div class="feature-card-desc">Zero external trust dependencies. Deploy SovRoute on your own node alongside Bitcoin Core, LND, and Base RPC.</div>
+                        </div>
                     </div>
                 </div>
             </section>
 
             <section id="how-it-works">
                 <h2 class="section-title">How it works</h2>
-                <div class="flow-container">
-                    <div class="flow-step">
-                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                        <span class="step-text">Fund Lightning hold invoice</span>
+                <div class="how-grid">
+                    <div class="how-card">
+                        <span class="how-num">01</span>
+                        <div class="how-icon-wrap">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        </div>
+                        <div class="how-title">Fund Hold Invoice</div>
+                        <div class="how-desc">Payer locks Bitcoin satoshis into an HTLC hold invoice tied to a secure hash.</div>
                     </div>
-                    <div class="flow-connector" aria-hidden="true"></div>
-                    <div class="flow-step">
-                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                        <span class="step-text">Lock matching USDC on Base</span>
+                    <div class="how-card">
+                        <span class="how-num">02</span>
+                        <div class="how-icon-wrap">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                        </div>
+                        <div class="how-title">Lock Base USDC</div>
+                        <div class="how-desc">Operator escrows matching USDC on Base smart contract with the identical hash.</div>
                     </div>
-                    <div class="flow-connector" aria-hidden="true"></div>
-                    <div class="flow-step">
-                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                        <span class="step-text">Claim reveals preimage</span>
+                    <div class="how-card">
+                        <span class="how-num">03</span>
+                        <div class="how-icon-wrap">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                        </div>
+                        <div class="how-title">Reveal Preimage</div>
+                        <div class="how-desc">USDC claim on Base reveals the secret preimage to the public blockchain.</div>
                     </div>
-                    <div class="flow-connector" aria-hidden="true"></div>
-                    <div class="flow-step">
-                        <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-                        <span class="step-text">Lightning settles</span>
+                    <div class="how-card">
+                        <span class="how-num">04</span>
+                        <div class="how-icon-wrap">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                        </div>
+                        <div class="how-title">Instant Settlement</div>
+                        <div class="how-desc">Lightning invoice captures the preimage and settles atomically. Zero counterparty risk.</div>
                     </div>
                 </div>
-                <p class="flow-note">If claim doesn't happen, refund path is deterministic.</p>
+                <p class="flow-note">&#128737;&#65039; If claim does not occur before timelock expiry, the refund path is mathematically guaranteed.</p>
             </section>
 
             <section id="architecture" class="arch-section">
+                <h2 class="section-title">Execution Architecture</h2>
                 <p class="arch-body">Receiver defines the outcome. SovRoute determines the route.</p>
-                <div class="arch-flow-wrapper">
-                    <div class="arch-flow" aria-label="Route flow: payer asset to receiver preference to route to execution to recovery to settlement">
-                        payer asset &rarr; receiver preference &rarr; route &rarr; execution &rarr; recovery &rarr; settlement
+                <div class="terminal-box">
+                    <div class="terminal-header">
+                        <span class="terminal-dot dot-red"></span>
+                        <span class="terminal-dot dot-yellow"></span>
+                        <span class="terminal-dot dot-green"></span>
+                        <span class="terminal-tab-title">sovroute-core &mdash; atomic-pipeline</span>
+                    </div>
+                    <div class="terminal-body">
+                        <div class="terminal-cmd">
+                            <span class="terminal-cmd-prompt">$</span> <span class="terminal-cmd-text">sovroute route --mode sovereign --from lightning --to base:usdc</span>
+                        </div>
+                        <div class="pipeline-flow" aria-label="Route flow: payer asset to receiver preference to route to execution to recovery to settlement">
+                            <span class="pipeline-step">payer asset</span>
+                            <span class="pipeline-arrow">&rarr;</span>
+                            <span class="pipeline-step">receiver preference</span>
+                            <span class="pipeline-arrow">&rarr;</span>
+                            <span class="pipeline-step">route</span>
+                            <span class="pipeline-arrow">&rarr;</span>
+                            <span class="pipeline-step">execution</span>
+                            <span class="pipeline-arrow">&rarr;</span>
+                            <span class="pipeline-step">recovery</span>
+                            <span class="pipeline-arrow">&rarr;</span>
+                            <span class="pipeline-step" style="color: #10b981;">settlement</span>
+                        </div>
                     </div>
                 </div>
             </section>
         </main>
 
         <footer>
-            <div class="footer-top">
-                <span class="footer-logo">SovRoute</span>
-                <div class="footer-links">
-                    <a href="#swap-widget">Swap Preview</a>
-                    <a href="#architecture">Architecture</a>
-                    <a href="#how-it-works">How it works</a>
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <span class="footer-logo">SovRoute</span>
+                    <p class="footer-desc">Non-custodial, peer-to-peer cross-chain settlement routing between Bitcoin Lightning Network and Base L2.</p>
+                    <div class="footer-status-pill">
+                        <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background-color: #10b981;"></span>
+                        Base Sepolia &amp; Lightning Active
+                    </div>
+                </div>
+                <div>
+                    <div class="footer-col-title">Protocol &amp; Specs</div>
+                    <ul class="footer-links-list">
+                        <li><a href="#swap-widget">Swap Widget</a></li>
+                        <li><a href="#how-it-works">Atomic Pipeline</a></li>
+                        <li><a href="#architecture">Architecture</a></li>
+                        <li><a href="https://github.com/sovroute/sovroute" target="_blank" rel="noopener noreferrer">GitHub Repository</a></li>
+                        <li><a href="/llms.txt" target="_blank">llms.txt Specification</a></li>
+                    </ul>
+                </div>
+                <div id="contact">
+                    <div class="footer-col-title">Connect</div>
+                    <ul class="footer-links-list">
+                        <li><a href="https://github.com/sovroute/sovroute/issues" target="_blank" rel="noopener noreferrer">Issue Tracker</a></li>
+                        <li><a href="mailto:contact@sovroute.com">contact@sovroute.com</a></li>
+                        <li><a href="https://basescan.org" target="_blank" rel="noopener noreferrer">Base Sepolia Explorer</a></li>
+                    </ul>
                 </div>
             </div>
-            <div class="footer-bottom">
-                &copy; 2026 SovRoute
+            <div class="footer-bottom-bar">
+                <span>&copy; 2026 SovRoute Protocol. All rights reserved.</span>
+                <span>Self-hosted &middot; Open Source &middot; Non-Custodial</span>
             </div>
         </footer>
     </div>
