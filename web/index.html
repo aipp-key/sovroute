@@ -465,6 +465,475 @@
                 margin-top: 10px; /* Optically center with 20px icon */
             }
         }
+
+        /* ==========================================================
+           Interactive Swap Widget & Settlement Pipeline Styles
+           ========================================================== */
+        .swap-section {
+            padding-bottom: 56px;
+        }
+
+        .swap-card {
+            max-width: 520px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border: 1px solid var(--border-light);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 24px -4px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+            position: relative;
+        }
+
+        .swap-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--border-light);
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .swap-rate-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            background: #f8fafc;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            border: 1px solid var(--border-light);
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background-color: #10b981;
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+            animation: pulse-dot 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+        }
+
+        .swap-expiry-badge {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            color: var(--accent-blue);
+            background-color: #eff6ff;
+            border: 1px solid var(--accent-blue-border);
+            padding: 4px 8px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .swap-field {
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 8px;
+            transition: border-color 0.15s ease, background-color 0.15s ease;
+        }
+
+        .swap-field:focus-within {
+            border-color: var(--accent-blue);
+            background-color: #ffffff;
+            box-shadow: 0 0 0 1px var(--accent-blue);
+        }
+
+        .swap-label-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .swap-input-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .swap-input {
+            width: 100%;
+            border: none;
+            outline: none;
+            background: transparent;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .swap-input::placeholder {
+            color: var(--text-mono);
+        }
+
+        .swap-asset-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            padding: 6px 12px;
+            border-radius: 9999px;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-main);
+            white-space: nowrap;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        }
+
+        .swap-chips {
+            display: flex;
+            gap: 6px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .swap-chip {
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            color: var(--text-muted);
+            font-size: 0.6875rem;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            padding: 2px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .swap-chip:hover {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .swap-divider-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: -4px 0;
+            position: relative;
+            z-index: 2;
+        }
+
+        .swap-divider-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+            transition: color 0.15s ease, border-color 0.15s ease;
+        }
+
+        .swap-address-group {
+            margin-top: 12px;
+            margin-bottom: 16px;
+        }
+
+        .swap-address-label-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: ui-monospace, SFMono-Regular, monospace;
+        }
+
+        .swap-address-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .swap-mini-link {
+            background: none;
+            border: none;
+            color: var(--accent-blue);
+            font-size: 0.6875rem;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 0;
+            font-family: inherit;
+        }
+
+        .swap-address-input {
+            width: 100%;
+            padding: 10px 12px;
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.8125rem;
+            color: var(--text-main);
+            outline: none;
+            transition: border-color 0.15s ease;
+        }
+
+        .swap-address-input:focus {
+            border-color: var(--accent-blue);
+            background-color: #ffffff;
+        }
+
+        .swap-limits-banner {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+
+        .swap-limit-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .swap-limit-label {
+            font-size: 0.625rem;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            color: var(--text-mono);
+            text-transform: uppercase;
+        }
+
+        .swap-limit-value {
+            font-size: 0.75rem;
+            font-weight: 600;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            color: var(--text-main);
+        }
+
+        .swap-action-btn {
+            width: 100%;
+            height: 46px;
+            background-color: var(--accent-blue);
+            color: #ffffff;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.9375rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: background-color 0.15s ease, transform 0.05s ease;
+            box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+        }
+
+        .swap-action-btn:hover {
+            background-color: #1d4ed8;
+        }
+
+        .swap-action-btn:active {
+            transform: scale(0.99);
+        }
+
+        .swap-action-btn:disabled {
+            background-color: #cbd5e1;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        /* Modal / Execution overlay */
+        .swap-modal-backdrop {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: rgba(15, 23, 42, 0.45);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .swap-modal-backdrop.active {
+            display: flex;
+        }
+
+        .swap-modal-content {
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            border-radius: 16px;
+            max-width: 480px;
+            width: 100%;
+            padding: 24px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            position: relative;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .modal-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .modal-close-btn {
+            background: none;
+            border: none;
+            font-size: 1.25rem;
+            color: var(--text-mono);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .modal-close-btn:hover {
+            color: var(--text-main);
+        }
+
+        /* Step Progression UI */
+        .step-timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            margin: 20px 0;
+        }
+
+        .step-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .step-badge-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            flex-shrink: 0;
+            background-color: #f1f5f9;
+            color: var(--text-muted);
+            border: 1px solid var(--border-light);
+        }
+
+        .step-row.active .step-badge-icon {
+            background-color: #eff6ff;
+            color: var(--accent-blue);
+            border-color: var(--accent-blue-border);
+            animation: pulse-ring 1.5s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+            70% { box-shadow: 0 0 0 8px rgba(37, 99, 235, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+        }
+
+        .step-row.done .step-badge-icon {
+            background-color: #ecfdf5;
+            color: #059669;
+            border-color: #a7f3d0;
+        }
+
+        .step-info {
+            flex-grow: 1;
+        }
+
+        .step-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 2px;
+        }
+
+        .step-subtext {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            line-height: 1.4;
+        }
+
+        .invoice-box {
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 12px 0;
+            text-align: center;
+        }
+
+        .invoice-bolt11 {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            word-break: break-all;
+            background: #ffffff;
+            border: 1px solid var(--border-light);
+            padding: 8px;
+            border-radius: 6px;
+            color: var(--text-main);
+            margin-top: 8px;
+            max-height: 60px;
+            overflow-y: auto;
+            text-align: left;
+        }
+
+        .copy-btn {
+            background-color: white;
+            border: 1px solid var(--border-light);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.6875rem;
+            cursor: pointer;
+            margin-top: 6px;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            color: var(--text-muted);
+        }
+
+        .copy-btn:hover {
+            border-color: var(--text-main);
+            color: var(--text-main);
+        }
+
+        .settlement-details-box {
+            background-color: #f8fafc;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.6875rem;
+            color: var(--text-muted);
+            margin-top: 16px;
+            line-height: 1.6;
+        }
     </style>
 
     <!-- JSON-LD Structured Data -->
@@ -489,12 +958,112 @@
             <p class="hero-sub">recovery-first &middot; direct-to-wallet &middot; self-hosted first</p>
             
             <div class="cta-group">
-                <a href="#architecture" class="btn btn-primary">View architecture</a>
+                <a href="#swap-widget" class="btn btn-primary">Try Live Preview</a>
                 <a href="#how-it-works" class="btn btn-secondary">How it works</a>
+                <a href="#architecture" class="btn btn-secondary">Architecture</a>
             </div>
         </header>
 
         <main>
+            <!-- Interactive Swap Widget Preview -->
+            <section id="swap-widget" class="swap-section">
+                <div class="swap-card">
+                    <div class="swap-card-header">
+                        <div class="swap-rate-indicator">
+                            <span class="status-dot"></span>
+                            <span id="rate-text">1 BTC &asymp; $78,500 USDC</span>
+                        </div>
+                        <div class="swap-expiry-badge">
+                            <svg width="12" height="12" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            <span id="countdown-text">Quote 20s</span>
+                        </div>
+                    </div>
+
+                    <!-- Pay Input -->
+                    <div class="swap-field">
+                        <div class="swap-label-row">
+                            <span>You Pay</span>
+                            <span id="usd-equiv">&asymp; $39.25 USD</span>
+                        </div>
+                        <div class="swap-input-row">
+                            <input type="number" id="sats-input" class="swap-input" value="50000" min="5000" max="350000" step="1000" aria-label="Sats Amount">
+                            <div class="swap-asset-tag">
+                                <svg width="14" height="14" viewBox="0 0 24 24" style="color: #eab308;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                Sats (Lightning)
+                            </div>
+                        </div>
+                        <div class="swap-chips">
+                            <button type="button" class="swap-chip" data-sats="25000">25,000</button>
+                            <button type="button" class="swap-chip" data-sats="50000">50,000</button>
+                            <button type="button" class="swap-chip" data-sats="100000">100,000</button>
+                            <button type="button" class="swap-chip" data-sats="250000">250,000</button>
+                        </div>
+                    </div>
+
+                    <!-- Direction Divider -->
+                    <div class="swap-divider-wrap">
+                        <div class="swap-divider-btn" aria-hidden="true">
+                            <svg width="14" height="14" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+                        </div>
+                    </div>
+
+                    <!-- Receive Output -->
+                    <div class="swap-field">
+                        <div class="swap-label-row">
+                            <span>You Receive</span>
+                            <span>Base Sepolia</span>
+                        </div>
+                        <div class="swap-input-row">
+                            <input type="text" id="usdc-output" class="swap-input" value="39.05" readonly aria-label="USDC Amount">
+                            <div class="swap-asset-tag">
+                                <svg width="14" height="14" viewBox="0 0 24 24" style="color: var(--accent-blue);"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M8 10h8"/></svg>
+                                Base USDC
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.6875rem; color: var(--text-mono); font-family: ui-monospace, monospace; margin-top: 8px;">
+                            <span>Fee: 0.50% (250 sats)</span>
+                            <span>Gas: $0.00 (Relayer)</span>
+                        </div>
+                    </div>
+
+                    <!-- Destination Base Address -->
+                    <div class="swap-address-group">
+                        <div class="swap-address-label-row">
+                            <span>Destination Base Address</span>
+                            <div class="swap-address-actions">
+                                <button type="button" class="swap-mini-link" id="btn-use-demo">Demo Address</button>
+                                <button type="button" class="swap-mini-link" id="btn-connect-wallet">Connect Wallet</button>
+                            </div>
+                        </div>
+                        <input type="text" id="destination-address" class="swap-address-input" placeholder="0x..." value="0x90F79bf6EB2c4f870365E785982E1f101E93b906" spellcheck="false">
+                        <div id="address-error" style="display: none; color: #ef4444; font-size: 0.6875rem; font-family: ui-monospace, monospace; margin-top: 4px;">Invalid EVM address format (must start with 0x and be 42 characters).</div>
+                    </div>
+
+                    <!-- Anti-Abuse Safety Limits Banner -->
+                    <div class="swap-limits-banner">
+                        <div class="swap-limit-item">
+                            <span class="swap-limit-label">Cooldown</span>
+                            <span class="swap-limit-value">60s / wallet</span>
+                        </div>
+                        <div class="swap-limit-item">
+                            <span class="swap-limit-label">24h Limit</span>
+                            <span class="swap-limit-value">$500 max</span>
+                        </div>
+                        <div class="swap-limit-item">
+                            <span class="swap-limit-label">Single Cap</span>
+                            <span class="swap-limit-value">$250 max</span>
+                        </div>
+                    </div>
+
+                    <!-- Action Button -->
+                    <button type="button" id="btn-initiate-swap" class="swap-action-btn">
+                        <svg width="18" height="18" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        Review &amp; Authorize Swap
+                    </button>
+                    <div id="limit-error" style="display: none; color: #ef4444; font-size: 0.75rem; font-family: ui-monospace, monospace; text-align: center; margin-top: 8px;"></div>
+                </div>
+            </section>
+
             <section id="products">
                 <div class="products-grid">
                     <div class="card primary">
@@ -597,6 +1166,7 @@
             <div class="footer-top">
                 <span class="footer-logo">SovRoute</span>
                 <div class="footer-links">
+                    <a href="#swap-widget">Swap Preview</a>
                     <a href="#architecture">Architecture</a>
                     <a href="#how-it-works">How it works</a>
                 </div>
@@ -607,5 +1177,548 @@
         </footer>
     </div>
 
+    <!-- Interactive Execution Modal -->
+    <div id="swap-modal" class="swap-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="swap-modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title" class="modal-title">Atomic Settlement Pipeline</h3>
+                <button type="button" id="modal-close" class="modal-close-btn" aria-label="Close modal">&times;</button>
+            </div>
+
+            <!-- View 1: Review & EIP-712 Gasless Permit -->
+            <div id="modal-view-eip712">
+                <div style="font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 16px;">
+                    SovRoute uses <strong>EIP-712 Typed Data</strong> so you pay <strong>$0.00 gas</strong> on Base. The operator relayer submits the transaction.
+                </div>
+
+                <div style="background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; padding: 12px; margin-bottom: 16px; font-family: ui-monospace, monospace; font-size: 0.75rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="color: var(--text-mono);">Route:</span>
+                        <strong>Lightning BTC &rarr; Base USDC</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="color: var(--text-mono);">Deposit:</span>
+                        <strong id="modal-pay-sats">50,000 sats</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="color: var(--text-mono);">Net Receive:</span>
+                        <strong id="modal-recv-usdc" style="color: var(--accent-blue);">39.05 USDC</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="color: var(--text-mono);">Destination:</span>
+                        <span id="modal-dest-addr" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">0x...</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: var(--text-mono);">Gas Fee:</span>
+                        <strong style="color: #059669;">$0.00 (Sponsored by Relayer)</strong>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 16px;">
+                    <button type="button" id="toggle-eip712-raw" class="swap-mini-link" style="display: inline-block; margin-bottom: 6px;">&blacktriangledown; View EIP-712 Typed Data JSON</button>
+                    <pre id="eip712-raw-json" style="display: none; background: #0f172a; color: #38bdf8; font-family: ui-monospace, monospace; font-size: 0.625rem; padding: 10px; border-radius: 6px; overflow-x: auto; max-height: 120px;"></pre>
+                </div>
+
+                <button type="button" id="btn-sign-permit" class="swap-action-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Sign Gasless Authorization
+                </button>
+            </div>
+
+            <!-- View 2: Lightning Hold Invoice & Settlement Timeline -->
+            <div id="modal-view-settle" style="display: none;">
+                <div class="invoice-box">
+                    <div style="display: flex; justify-content: center; margin-bottom: 12px;" id="qr-code-wrap">
+                        <!-- Dynamic SVG QR placeholder -->
+                    </div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-main);">Lightning Hold Invoice</div>
+                    <div id="invoice-bolt11" class="invoice-bolt11">lnbc...</div>
+                    <button type="button" id="btn-copy-bolt11" class="copy-btn">Copy Invoice</button>
+                </div>
+
+                <!-- Atomic HTLC Step Pipeline -->
+                <div class="step-timeline">
+                    <div class="step-row" id="step-row-1">
+                        <div class="step-badge-icon" id="badge-1">1</div>
+                        <div class="step-info">
+                            <div class="step-title">1. Lightning Hold HTLC Funded</div>
+                            <div class="step-subtext" id="step-subtext-1">Awaiting satoshi lock on Lightning...</div>
+                        </div>
+                    </div>
+                    <div class="step-row" id="step-row-2">
+                        <div class="step-badge-icon" id="badge-2">2</div>
+                        <div class="step-info">
+                            <div class="step-title">2. Relayer Locks Base USDC</div>
+                            <div class="step-subtext" id="step-subtext-2">Operator locks funds in Coordinator contract</div>
+                        </div>
+                    </div>
+                    <div class="step-row" id="step-row-3">
+                        <div class="step-badge-icon" id="badge-3">3</div>
+                        <div class="step-info">
+                            <div class="step-title">3. Preimage Disclosure &amp; Claim</div>
+                            <div class="step-subtext" id="step-subtext-3">Revealing SHA-256 secret on Base chain</div>
+                        </div>
+                    </div>
+                    <div class="step-row" id="step-row-4">
+                        <div class="step-badge-icon" id="badge-4">4</div>
+                        <div class="step-info">
+                            <div class="step-title">4. Lightning Settlement &amp; Release</div>
+                            <div class="step-subtext" id="step-subtext-4">Sats claimed &amp; USDC settled to recipient wallet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="settlement-receipt" class="settlement-details-box" style="display: none;">
+                    <div style="color: #059669; font-weight: 600; margin-bottom: 6px;">&check; Atomic Settlement Verified</div>
+                    <div style="word-break: break-all;">Base Tx: <a id="receipt-tx-link" href="#" target="_blank" rel="noopener noreferrer" style="color: var(--accent-blue); text-decoration: none;">0x...</a></div>
+                    <div style="word-break: break-all;">SHA256 Preimage: <span id="receipt-preimage" style="color: var(--text-main);">0x...</span></div>
+                    <div>Settlement Duration: <strong>2.8s</strong> (Deterministic HTLC)</div>
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-top: 16px;">
+                    <button type="button" id="btn-simulate-pay" class="swap-action-btn" style="flex: 1;">
+                        <svg width="16" height="16" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        Simulate Lightning Pay
+                    </button>
+                    <button type="button" id="btn-done-reset" class="btn btn-secondary" style="display: none; height: 46px; flex: 1;">
+                        New Swap
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Client-Side Swap Engine & Settlement Simulation -->
+    <script>
+        (function () {
+            'use strict';
+
+            let btcPrice = 78500;
+            let secondsRemaining = 20;
+            let timerInterval = null;
+            let currentQuote = null;
+
+            const satsInput = document.getElementById('sats-input');
+            const usdcOutput = document.getElementById('usdc-output');
+            const usdEquiv = document.getElementById('usd-equiv');
+            const rateText = document.getElementById('rate-text');
+            const countdownText = document.getElementById('countdown-text');
+            const destinationAddress = document.getElementById('destination-address');
+            const addressError = document.getElementById('address-error');
+            const limitError = document.getElementById('limit-error');
+            const btnInitiateSwap = document.getElementById('btn-initiate-swap');
+            const btnUseDemo = document.getElementById('btn-use-demo');
+            const btnConnectWallet = document.getElementById('btn-connect-wallet');
+            const chips = document.querySelectorAll('.swap-chip');
+
+            // Modal elements
+            const modal = document.getElementById('swap-modal');
+            const modalClose = document.getElementById('modal-close');
+            const modalViewEip = document.getElementById('modal-view-eip712');
+            const modalViewSettle = document.getElementById('modal-view-settle');
+            const modalPaySats = document.getElementById('modal-pay-sats');
+            const modalRecvUsdc = document.getElementById('modal-recv-usdc');
+            const modalDestAddr = document.getElementById('modal-dest-addr');
+            const toggleEipRaw = document.getElementById('toggle-eip712-raw');
+            const eipRawJson = document.getElementById('eip712-raw-json');
+            const btnSignPermit = document.getElementById('btn-sign-permit');
+            const invoiceBolt11 = document.getElementById('invoice-bolt11');
+            const btnCopyBolt11 = document.getElementById('btn-copy-bolt11');
+            const qrCodeWrap = document.getElementById('qr-code-wrap');
+            const btnSimulatePay = document.getElementById('btn-simulate-pay');
+            const btnDoneReset = document.getElementById('btn-done-reset');
+            const settlementReceipt = document.getElementById('settlement-receipt');
+            const receiptTxLink = document.getElementById('receipt-tx-link');
+            const receiptPreimage = document.getElementById('receipt-preimage');
+
+            // Generate SVG QR Code Matrix Pattern (Clean 21x21 QR standard)
+            function renderSvgQr(hashSeed) {
+                const size = 21;
+                let svg = '<svg viewBox="0 0 21 21" width="130" height="130" shape-rendering="crispEdges" style="background:#ffffff; padding:8px; border:1px solid var(--border-light); border-radius:8px;">';
+                svg += '<rect width="21" height="21" fill="#ffffff"/>';
+
+                function isFinder(r, c) {
+                    if (r < 7 && c < 7) return true;
+                    if (r < 7 && c >= size - 7) return true;
+                    if (r >= size - 7 && c < 7) return true;
+                    return false;
+                }
+
+                function drawFinder(r0, c0) {
+                    for (let r = 0; r < 7; r++) {
+                        for (let c = 0; c < 7; c++) {
+                            const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
+                            const isCore = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+                            if (isBorder || isCore) {
+                                svg += `<rect x="${c0 + c}" y="${r0 + r}" width="1" height="1" fill="#0f172a"/>`;
+                            }
+                        }
+                    }
+                }
+
+                drawFinder(0, 0);
+                drawFinder(0, size - 7);
+                drawFinder(size - 7, 0);
+
+                // Timing lines
+                for (let i = 8; i < size - 8; i++) {
+                    if (i % 2 === 0) {
+                        svg += `<rect x="${i}" y="6" width="1" height="1" fill="#0f172a"/>`;
+                        svg += `<rect x="6" y="${i}" width="1" height="1" fill="#0f172a"/>`;
+                    }
+                }
+
+                // Deterministic pseudo-data dots based on seed
+                let h = 0x811c9dc5;
+                for (let i = 0; i < hashSeed.length; i++) {
+                    h ^= hashSeed.charCodeAt(i);
+                    h = Math.imul(h, 0x01000193);
+                }
+
+                for (let r = 0; r < size; r++) {
+                    for (let c = 0; c < size; c++) {
+                        if (isFinder(r, c) || (r === 6 && c >= 7 && c <= 13) || (c === 6 && r >= 7 && r <= 13)) {
+                            continue;
+                        }
+                        h = Math.imul(h ^ (r * 31 + c), 0x01000193);
+                        if ((h & 0x7) < 3) {
+                            svg += `<rect x="${c}" y="${r}" width="1" height="1" fill="#0f172a"/>`;
+                        }
+                    }
+                }
+
+                svg += '</svg>';
+                return svg;
+            }
+
+            // Price fetcher
+            async function fetchBtcPrice() {
+                try {
+                    const res = await fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+                    if (res.ok) {
+                        const data = await res.json();
+                        const fetched = parseFloat(data.data.amount);
+                        if (!isNaN(fetched) && fetched > 1000) {
+                            btcPrice = fetched;
+                        }
+                    }
+                } catch (e) {
+                    // Fallback to existing price if offline
+                }
+                rateText.textContent = `1 BTC ≈ $${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC`;
+                secondsRemaining = 20;
+                recalculateQuote();
+            }
+
+            // Quote recalculation
+            function recalculateQuote() {
+                const sats = parseInt(satsInput.value, 10) || 0;
+                const grossUsd = (sats / 100000000) * btcPrice;
+                const feeUsd = grossUsd * 0.005; // 50 bps protocol spread
+                const netUsdc = Math.max(0, grossUsd - feeUsd);
+
+                usdEquiv.textContent = `≈ $${grossUsd.toFixed(2)} USD`;
+                usdcOutput.value = netUsdc.toFixed(2);
+
+                // Anti-Abuse Checks
+                if (sats < 5000) {
+                    limitError.textContent = 'Minimum deposit is 5,000 sats (~$3.90).';
+                    limitError.style.display = 'block';
+                    btnInitiateSwap.disabled = true;
+                    return;
+                }
+
+                if (grossUsd > 250) {
+                    limitError.textContent = `Beta Safety Cap Exceeded: Max $250.00 per single swap (Current: $${grossUsd.toFixed(2)}).`;
+                    limitError.style.display = 'block';
+                    btnInitiateSwap.disabled = true;
+                    return;
+                }
+
+                limitError.style.display = 'none';
+                btnInitiateSwap.disabled = false;
+
+                currentQuote = {
+                    sats: sats,
+                    btcPrice: btcPrice,
+                    grossUsd: grossUsd,
+                    feeUsd: feeUsd,
+                    netUsdc: netUsdc,
+                    quoteId: 'q-' + Math.random().toString(16).substring(2, 14),
+                    deadline: Math.floor(Date.now() / 1000) + 1200 // +20 min
+                };
+            }
+
+            // EVM Address validator
+            function isValidAddress(addr) {
+                return /^0x[a-fA-F0-9]{40}$/.test(addr.trim());
+            }
+
+            // Timer countdown
+            timerInterval = setInterval(function () {
+                secondsRemaining--;
+                if (secondsRemaining <= 0) {
+                    secondsRemaining = 20;
+                    fetchBtcPrice();
+                } else {
+                    countdownText.textContent = `Quote ${secondsRemaining}s`;
+                }
+            }, 1000);
+
+            // Listeners for inputs
+            satsInput.addEventListener('input', recalculateQuote);
+            chips.forEach(function (chip) {
+                chip.addEventListener('click', function () {
+                    satsInput.value = this.dataset.sats;
+                    recalculateQuote();
+                });
+            });
+
+            btnUseDemo.addEventListener('click', function () {
+                destinationAddress.value = '0x90F79bf6EB2c4f870365E785982E1f101E93b906';
+                addressError.style.display = 'none';
+            });
+
+            btnConnectWallet.addEventListener('click', async function () {
+                if (window.ethereum) {
+                    try {
+                        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                        if (accounts && accounts.length > 0) {
+                            destinationAddress.value = accounts[0];
+                            addressError.style.display = 'none';
+                        }
+                    } catch (err) {
+                        console.warn('Wallet connection dismissed');
+                    }
+                } else {
+                    alert('No Web3 wallet extension detected in your browser. Pre-filling with standard demo Base address.');
+                    destinationAddress.value = '0x90F79bf6EB2c4f870365E785982E1f101E93b906';
+                }
+            });
+
+            destinationAddress.addEventListener('input', function () {
+                if (isValidAddress(this.value)) {
+                    addressError.style.display = 'none';
+                }
+            });
+
+            // Open Modal -> Step 1: EIP-712 Review
+            btnInitiateSwap.addEventListener('click', function () {
+                const dest = destinationAddress.value.trim();
+                if (!isValidAddress(dest)) {
+                    addressError.style.display = 'block';
+                    destinationAddress.focus();
+                    return;
+                }
+                addressError.style.display = 'none';
+
+                if (!currentQuote) recalculateQuote();
+
+                modalPaySats.textContent = `${currentQuote.sats.toLocaleString()} sats`;
+                modalRecvUsdc.textContent = `${currentQuote.netUsdc.toFixed(2)} USDC`;
+                modalDestAddr.textContent = dest;
+                modalDestAddr.title = dest;
+
+                const eip712Data = {
+                    types: {
+                        EIP712Domain: [
+                            { name: 'name', type: 'string' },
+                            { name: 'version', type: 'string' },
+                            { name: 'chainId', type: 'uint256' },
+                            { name: 'verifyingContract', type: 'address' }
+                        ],
+                        SovRouteAuthorization: [
+                            { name: 'swapper', type: 'address' },
+                            { name: 'destination', type: 'address' },
+                            { name: 'amountUsdc', type: 'uint256' },
+                            { name: 'quoteId', type: 'string' },
+                            { name: 'nonce', type: 'uint256' },
+                            { name: 'deadline', type: 'uint256' }
+                        ]
+                    },
+                    primaryType: 'SovRouteAuthorization',
+                    domain: {
+                        name: 'SovRoute',
+                        version: '1',
+                        chainId: 84532,
+                        verifyingContract: '0x0165878A594ca255338adfa4d48449f69242Eb8F'
+                    },
+                    message: {
+                        swapper: dest,
+                        destination: dest,
+                        amountUsdc: Math.floor(currentQuote.netUsdc * 1e6).toString(),
+                        quoteId: currentQuote.quoteId,
+                        nonce: 0,
+                        deadline: currentQuote.deadline
+                    }
+                };
+
+                eipRawJson.textContent = JSON.stringify(eip712Data, null, 2);
+
+                modalViewEip.style.display = 'block';
+                modalViewSettle.style.display = 'none';
+                modal.classList.add('active');
+            });
+
+            // Toggle EIP raw JSON
+            toggleEipRaw.addEventListener('click', function () {
+                if (eipRawJson.style.display === 'none') {
+                    eipRawJson.style.display = 'block';
+                    this.textContent = '▲ Hide EIP-712 Typed Data JSON';
+                } else {
+                    eipRawJson.style.display = 'none';
+                    this.textContent = '▼ View EIP-712 Typed Data JSON';
+                }
+            });
+
+            // Close Modal
+            modalClose.addEventListener('click', function () {
+                modal.classList.remove('active');
+            });
+
+            modal.addEventListener('click', function (e) {
+                if (e.target === modal) {
+                    modal.classList.remove('active');
+                }
+            });
+
+            // Sign Permit -> Step 2: Hold Invoice
+            btnSignPermit.addEventListener('click', async function () {
+                btnSignPermit.disabled = true;
+                btnSignPermit.textContent = 'Authorizing...';
+
+                // Try real web3 sign if available, otherwise instant mock sign
+                if (window.ethereum && window.ethereum.selectedAddress) {
+                    try {
+                        const raw = JSON.parse(eipRawJson.textContent);
+                        await window.ethereum.request({
+                            method: 'eth_signTypedData_v4',
+                            params: [window.ethereum.selectedAddress, JSON.stringify(raw)]
+                        });
+                    } catch (e) {
+                        // User canceled or mock fallback
+                    }
+                }
+
+                // Transition to Invoice View
+                const fakeBolt11 = `lnbc${Math.floor(currentQuote.sats / 1000)}u1p${Math.random().toString(36).substring(2, 12)}pp5${Math.random().toString(36).substring(2, 16)}qqqpxqrrss`;
+                invoiceBolt11.textContent = fakeBolt11;
+                qrCodeWrap.innerHTML = renderSvgQr(fakeBolt11);
+
+                // Reset timeline
+                for (let i = 1; i <= 4; i++) {
+                    const row = document.getElementById(`step-row-${i}`);
+                    const badge = document.getElementById(`badge-${i}`);
+                    row.className = 'step-row';
+                    badge.innerHTML = i.toString();
+                }
+                document.getElementById('step-subtext-1').textContent = 'Awaiting satoshi lock on Lightning...';
+                document.getElementById('step-subtext-2').textContent = 'Operator locks funds in Coordinator contract';
+                document.getElementById('step-subtext-3').textContent = 'Revealing SHA-256 secret on Base chain';
+                document.getElementById('step-subtext-4').textContent = 'Sats claimed & USDC settled to recipient wallet';
+                settlementReceipt.style.display = 'none';
+                btnSimulatePay.style.display = 'flex';
+                btnSimulatePay.disabled = false;
+                btnDoneReset.style.display = 'none';
+
+                modalViewEip.style.display = 'none';
+                modalViewSettle.style.display = 'block';
+                btnSignPermit.disabled = false;
+                btnSignPermit.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Sign Gasless Authorization';
+            });
+
+            // Copy invoice
+            btnCopyBolt11.addEventListener('click', function () {
+                navigator.clipboard.writeText(invoiceBolt11.textContent).then(function () {
+                    btnCopyBolt11.textContent = 'Copied!';
+                    setTimeout(() => { btnCopyBolt11.textContent = 'Copy Invoice'; }, 2000);
+                });
+            });
+
+            // Simulate Atomic Settlement Pipeline
+            btnSimulatePay.addEventListener('click', function () {
+                btnSimulatePay.disabled = true;
+                btnSimulatePay.textContent = 'Settling Atomic Route...';
+
+                const row1 = document.getElementById('step-row-1');
+                const badge1 = document.getElementById('badge-1');
+                const sub1 = document.getElementById('step-subtext-1');
+
+                const row2 = document.getElementById('step-row-2');
+                const badge2 = document.getElementById('badge-2');
+                const sub2 = document.getElementById('step-subtext-2');
+
+                const row3 = document.getElementById('step-row-3');
+                const badge3 = document.getElementById('badge-3');
+                const sub3 = document.getElementById('step-subtext-3');
+
+                const row4 = document.getElementById('step-row-4');
+                const badge4 = document.getElementById('badge-4');
+                const sub4 = document.getElementById('step-subtext-4');
+
+                // Step 1: Lightning HTLC Hold
+                row1.className = 'step-row active';
+                sub1.textContent = 'Detecting payment in Lightning hold HTLC...';
+
+                setTimeout(function () {
+                    row1.className = 'step-row done';
+                    badge1.innerHTML = '&#10003;';
+                    sub1.textContent = 'Payment held (HTLC locked with SHA-256 hash).';
+
+                    // Step 2: Base Relayer Lock
+                    row2.className = 'step-row active';
+                    sub2.textContent = 'Relayer broadcasting lock to Base Sepolia (Coordinator)...';
+
+                    setTimeout(function () {
+                        row2.className = 'step-row done';
+                        badge2.innerHTML = '&#10003;';
+                        sub2.textContent = `${currentQuote.netUsdc.toFixed(2)} USDC locked in contract with matching hashlock.`;
+
+                        // Step 3: Preimage Reveal
+                        row3.className = 'step-row active';
+                        sub3.textContent = 'Claiming USDC & revealing preimage on Base...';
+
+                        setTimeout(function () {
+                            row3.className = 'step-row done';
+                            badge3.innerHTML = '&#10003;';
+                            sub3.textContent = 'Preimage confirmed on-chain! Lightning invoice can now settle.';
+
+                            // Step 4: Final Settlement
+                            row4.className = 'step-row active';
+                            sub4.textContent = 'Settling Lightning hold invoice & completing swap...';
+
+                            setTimeout(function () {
+                                row4.className = 'step-row done';
+                                badge4.innerHTML = '&#10003;';
+                                sub4.textContent = `Completed! ${currentQuote.netUsdc.toFixed(2)} USDC confirmed in ${destinationAddress.value.trim().substring(0, 8)}...`;
+
+                                const mockTx = '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('');
+                                const mockPreimage = '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('');
+                                receiptTxLink.textContent = mockTx.substring(0, 10) + '...' + mockTx.substring(58);
+                                receiptTxLink.href = `https://sepolia.basescan.org/tx/${mockTx}`;
+                                receiptPreimage.textContent = mockPreimage.substring(0, 10) + '...' + mockPreimage.substring(58);
+                                settlementReceipt.style.display = 'block';
+
+                                btnSimulatePay.style.display = 'none';
+                                btnDoneReset.style.display = 'block';
+                            }, 1000);
+
+                        }, 1200);
+
+                    }, 1400);
+
+                }, 1000);
+            });
+
+            // Done / Reset
+            btnDoneReset.addEventListener('click', function () {
+                modal.classList.remove('active');
+                recalculateQuote();
+            });
+
+            // Initial load
+            fetchBtcPrice();
+        })();
+    </script>
 </body>
 </html>

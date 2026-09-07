@@ -1401,7 +1401,7 @@ describe('PHASE 7 — PRODUCTION READINESS CERTIFICATION SUITE', () => {
     it('REL-02: Package-lock.json exists and matches package name and version', () => {
       assert.ok(fs.existsSync('package-lock.json'));
       const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
-      assert.strictEqual(lock.name, 'universal-agent-asset-router');
+      assert.strictEqual(lock.name, 'sovroute');
       assert.strictEqual(lock.lockfileVersion, 3);
     });
 
