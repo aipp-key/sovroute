@@ -26,8 +26,9 @@ export { ProductionConfigError };
 import { SqlitePersistence } from './persistence/sqlite.ts';
 import { HealthService } from './health/health-service.ts';
 import { AtomicCoordinator } from './atomic/coordinator/coordinator.ts';
-import { LndClient, type ILndClient, type LndClientConfig } from './atomic/lightning/lnd-client.ts';
+import { LndClient, type ILndClient } from './atomic/lightning/lnd-client.ts';
 import { LndLightningAtomicBackend } from './atomic/lightning/lnd-backend.ts';
+import { buildVerifiedLndClient } from './config/lnd-connection.ts';
 import { BaseSepoliaAtomicBackend } from './atomic/evm/base-sepolia-backend.ts';
 import { ChainInventoryReconciler } from './atomic/liquidity/chain-reconciler.ts';
 import {
@@ -242,21 +243,11 @@ async function bootstrapProductionRouterInternal(
   } else if (options?._testOverrides?.lightningBackend) {
     lightningBackend = options._testOverrides.lightningBackend;
   } else {
-    const lndConfig: LndClientConfig = {
-      restEndpoint: `https://${validatedConfig.lightning.host}:${validatedConfig.lightning.port}`,
-      expectedNetwork: 'regtest',
-    };
-    if (validatedConfig.lightning.macaroonHex) {
-      lndConfig.macaroonHex = validatedConfig.lightning.macaroonHex;
-    }
-    if (validatedConfig.lightning.tlsCertHex) {
-      lndConfig.tlsCertPem = Buffer.from(validatedConfig.lightning.tlsCertHex, 'hex').toString('utf8');
-    }
-
-    const verifiedLndClient = new LndClient(lndConfig);
-    await verifiedLndClient.verifyNetworkSafety();
-    lndClient = verifiedLndClient;
-    lightningBackend = new LndLightningAtomicBackend(verifiedLndClient);
+    // STEP 7 (production path): Use canonical factory.
+    // Reads network, TLS cert, and macaroon from validated config.
+    // verifyNetworkSafety() is called inside buildVerifiedLndClient — fail closed if wrong network.
+    lndClient = await buildVerifiedLndClient(validatedConfig.lightning);
+    lightningBackend = new LndLightningAtomicBackend(lndClient);
   }
 
   // =========================================================================
