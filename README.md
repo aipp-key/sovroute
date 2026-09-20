@@ -113,3 +113,11 @@ Centralized providers (e.g. FixedFloat, SideShift) have been isolated into `src/
 * [`SECURITY_MODEL_V1.md`](SECURITY_MODEL_V1.md): Comprehensive 30-threat model and 25 frozen security invariants.
 * [`ARCHITECTURE_V4_SOVEREIGN_CORE.md`](ARCHITECTURE_V4_SOVEREIGN_CORE.md): Full 33-section Architecture V4 specification.
 * [`SOVEREIGN_CORE_REBASE_REPORT.md`](SOVEREIGN_CORE_REBASE_REPORT.md): Summary of architectural rebase and verification results.
+* **Base Sepolia Contract**: [`0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f`](https://sepolia.basescan.org/address/0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f)
+
+---
+
+## License
+
+This project is free, open-source software released under the [MIT License](LICENSE).
+
