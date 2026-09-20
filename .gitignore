@@ -37,5 +37,8 @@ regtest-env/data/
 *.cert
 tls.key
 
-# Local preview
+# Local preview & internal tracker (DO NOT COMMIT)
 logo-onizleme.*
+YOL_HARITASI_VE_IZLEK.md
+*.local.md
+
