@@ -36,3 +36,6 @@ regtest-env/data/
 *.macaroon
 *.cert
 tls.key
+
+# Local preview
+logo-onizleme.*

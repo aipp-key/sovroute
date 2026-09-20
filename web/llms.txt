@@ -1,27 +1,28 @@
 # SovRoute
 
-SovRoute is receiver-defined settlement infrastructure.
+SovRoute — Sovereign Non-Custodial Cross-Rail Settlement Infrastructure (Lightning to Base USDC)
 
-Pay with what you have. Receive what you want.
+SovRoute is a trust-minimized, non-custodial cross-rail settlement engine enabling direct atomic swaps between Bitcoin Lightning Network and Base L2 USDC. By employing deterministic SHA-256 HTLCs and BOLT11 hold invoices, it allows peer-to-peer settlement without centralized intermediaries, pooled custody, or KYC checkpoints.
 
-## Current route
+## Current Route
+Lightning BTC -> Base L2 canonical USDC
 
-Lightning BTC -> Base USDC
+## Core Properties
+- 100% Non-Custodial (No pooled custody, zero operator hot wallet balance)
+- Deterministic Recovery Model (Mathematical refund paths guaranteed via on-chain timelocks)
+- Direct-to-Wallet Settlement (Zero KYC checkpoints, peer-to-peer)
+- Self-Hosted First (Run alongside Bitcoin Core, LND, and Base RPC)
+- Open Source (MIT License)
 
-## Core properties
+## Protocol Execution Pipeline
+1. User locks satoshis into a BOLT11 Lightning hold invoice using a secret preimage hash.
+2. Router escrows canonical USDC into an immutable on-chain smart contract (HtlcErc20) on Base L2 using the identical hashlock.
+3. User claims USDC directly to their self-custody wallet by revealing the preimage on-chain.
+4. Router captures revealed preimage and settles Lightning satoshis atomically.
+5. If claim does not occur within the timelock, mathematical refunds are guaranteed on both rails.
 
-- Recovery-aware execution
-- Trust-minimized settlement
-- Direct-to-wallet settlement
-- No custodial user balance
-- Self-hosted first
-
-## Product model
-
-Receiver defines the outcome. SovRoute determines the route.
-
-payer asset -> receiver preference -> route -> execution -> recovery -> settlement
-
-## Website
-
-https://sovroute.com/
+## Codebase & Verification
+- GitHub: https://github.com/aipp-key/sovroute
+- Architecture Spec: https://github.com/aipp-key/sovroute/blob/master/ARCHITECTURE_V4_SOVEREIGN_CORE.md
+- Live Web Interface: https://sovroute.com/swap
+- Base Sepolia Smart Contract: 0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f

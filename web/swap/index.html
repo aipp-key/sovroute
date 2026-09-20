@@ -3,15 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SovRoute Swap &mdash; Non-Custodial Lightning to Base USDC</title>
-    <meta name="description" content="Execute trustless, non-custodial cross-chain atomic swaps between Bitcoin Lightning and Base Sepolia USDC.">
+    <title>SovRoute Swap &mdash; Sovereign Non-Custodial Cross-Rail Settlement (Lightning to Base USDC)</title>
+    <meta name="description" content="Execute trust-minimized, non-custodial cross-rail atomic swaps between Bitcoin Lightning and Base USDC. Zero KYC, sponsored gas.">
     <link rel="canonical" href="https://sovroute.com/swap">
 
     <!-- Open Graph -->
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://sovroute.com/swap">
-    <meta property="og:title" content="SovRoute Swap &mdash; Non-Custodial Cross-Chain Settlement">
-    <meta property="og:description" content="Sub-second Bitcoin Lightning to Base USDC atomic swaps with zero custody and sponsored gas.">
+    <meta property="og:title" content="SovRoute Swap &mdash; Sovereign Non-Custodial Cross-Rail Settlement">
+    <meta property="og:description" content="Direct atomic swaps between Bitcoin Lightning Network and Base L2 canonical USDC with zero custody and sponsored gas.">
+    <meta property="og:image" content="https://sovroute.com/assets/sovroute-logo.png">
+
+    <!-- Favicon & Icons -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon.png">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
 
     <style>
         :root {
@@ -93,6 +98,14 @@
             gap: 10px;
             text-decoration: none;
             color: var(--text-main);
+        }
+
+        .app-logo-img {
+            height: 32px;
+            width: auto;
+            object-fit: contain;
+            display: block;
+            filter: drop-shadow(0 2px 6px rgba(37, 99, 235, 0.14));
         }
 
         .app-logo-text {
@@ -811,6 +824,7 @@
         <div class="header-left">
             <a href="/" class="back-link">&larr; SovRoute Protocol</a>
             <a href="/" class="app-brand">
+                <img src="/assets/sovroute-logo.png" alt="SovRoute Logo" class="app-logo-img">
                 <span class="app-logo-text">SovRoute</span>
                 <span class="app-mode-badge">SWAP</span>
             </a>
