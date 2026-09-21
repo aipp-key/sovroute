@@ -25,7 +25,8 @@
     "regtest:start": "powershell -ExecutionPolicy Bypass -File regtest-env/start-regtest.ps1",
     "regtest:stop": "node regtest-env/stop-nodes.mjs",
     "regtest:bootstrap": "node regtest-env/bootstrap-channel.mjs",
-    "deploy:web": "npx wrangler deploy"
+    "deploy:web": "npx wrangler deploy",
+    "demo:live": "node scripts/demo-live-e2e.mjs"
   },
   "keywords": [
     "asset-routing",
