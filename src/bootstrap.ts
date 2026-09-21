@@ -26,7 +26,7 @@ export { ProductionConfigError };
 import { SqlitePersistence } from './persistence/sqlite.ts';
 import { HealthService } from './health/health-service.ts';
 import { AtomicCoordinator } from './atomic/coordinator/coordinator.ts';
-import { LndClient, type ILndClient } from './atomic/lightning/lnd-client.ts';
+import { type ILndClient } from './atomic/lightning/lnd-client.ts';
 import { LndLightningAtomicBackend } from './atomic/lightning/lnd-backend.ts';
 import { buildVerifiedLndClient } from './config/lnd-connection.ts';
 import { BaseSepoliaAtomicBackend } from './atomic/evm/base-sepolia-backend.ts';
