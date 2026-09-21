@@ -1,0 +1,170 @@
+# ==============================================================================
+# SovRoute-Box: Sovereign Non-Custodial Cross-Rail Settlement Node
+# Architecture: Bitcoin Core (Pruned) + LND (Mode A) + SovRoute Core & Watcher
+# Security Model: Strict Dual-Network Isolation, Segregated UIDs, Least-Privilege
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Bitcoin Core (Consensus & Blockchain Source Layer)
+  # Network: sovereign_chain_net ONLY (10.240.10.2)
+  # Security: UID 2101, zero wallet, outbound only, zero public ports
+  # ----------------------------------------------------------------------------
+  sovereign-bitcoind:
+    image: ruimarinho/bitcoin-core:28.0
+    container_name: sovereign-bitcoind
+    restart: unless-stopped
+    user: "2101:2101"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      sovereign_chain_net:
+        ipv4_address: 10.240.10.2
+    volumes:
+      - ${SOVROUTE_DATA_DIR:-/srv/sovereign-router}/bitcoin:/data/.bitcoin
+      - ${SOVROUTE_CONFIG_DIR:-/srv/sovereign-router}/config/bitcoin.conf:/etc/bitcoin/bitcoin.conf:ro
+    command:
+      - -conf=/etc/bitcoin/bitcoin.conf
+      - -datadir=/data/.bitcoin
+      - -prune=55000
+      - -dbcache=2048
+      - -disablewallet=1
+      - -listen=0
+      - -server=1
+      - -rpcbind=10.240.10.2
+      - -rpcallowip=10.240.10.0/24
+      - -zmqpubrawblock=tcp://10.240.10.2:28332
+      - -zmqpubrawtx=tcp://10.240.10.2:28333
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # 2. LND (Lightning Network Daemon) [DUAL-HOMED BRIDGE]
+  # Networks: sovereign_chain_net (10.240.10.3) + sovereign_router_net (10.240.20.2)
+  # Security: UID 2102, Mode A (unpublished 9735), restricted macaroon
+  # ----------------------------------------------------------------------------
+  sovereign-lnd:
+    image: lightninglabs/lnd:v0.21.3-beta
+    container_name: sovereign-lnd
+    restart: unless-stopped
+    user: "2102:2102"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - sovereign-bitcoind
+    networks:
+      sovereign_chain_net:
+        ipv4_address: 10.240.10.3
+      sovereign_router_net:
+        ipv4_address: 10.240.20.2
+    volumes:
+      - ${SOVROUTE_DATA_DIR:-/srv/sovereign-router}/lightning:/data/.lnd
+      - ${SOVROUTE_CONFIG_DIR:-/srv/sovereign-router}/config/lnd.conf:/data/.lnd/lnd.conf:ro
+    command:
+      - --configfile=/data/.lnd/lnd.conf
+      - --bitcoin.active
+      - --bitcoin.${BITCOIN_NETWORK:-mainnet}
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=10.240.10.2:8332
+      - --bitcoind.zmqpubrawblock=tcp://10.240.10.2:28332
+      - --bitcoind.zmqpubrawtx=tcp://10.240.10.2:28333
+      - --rpclisten=10.240.20.2:10009
+      - --restlisten=10.240.20.2:8080
+      - --nolisten
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # 3. SovRoute Router & On-Chain Watcher (Coordination & Settlement Engine)
+  # Network: sovereign_router_net ONLY (10.240.20.3)
+  # Security: UID 2100, zero user keys, Base Multi-RPC failover, SQLite WAL
+  # ----------------------------------------------------------------------------
+  sovroute-router:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.box
+    image: sovroute/router:latest
+    container_name: sovroute-router
+    restart: unless-stopped
+    user: "2100:2100"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - sovereign-lnd
+    networks:
+      sovereign_router_net:
+        ipv4_address: 10.240.20.3
+    ports:
+      - "${ROUTER_HOST_PORT:-3000}:3000"
+    volumes:
+      - ${SOVROUTE_DATA_DIR:-/srv/sovereign-router}/router:/data
+      - ${SOVROUTE_DATA_DIR:-/srv/sovereign-router}/secrets:/secrets:ro
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_PATH=/data/router.sqlite
+      # Lightning Integration (via router_net)
+      - LND_HOST=10.240.20.2
+      - LND_PORT=8080
+      - LND_NETWORK=${BITCOIN_NETWORK:-mainnet}
+      - LND_MACAROON_PATH=/secrets/router-restricted.macaroon
+      - LND_TLS_CERT_PATH=/secrets/lnd-tls.cert
+      # Base L2 Smart Contract & Multi-RPC Watcher Configuration
+      - BASE_CHAIN_ID=${BASE_CHAIN_ID:-84532}
+      - BASE_RPC_URL=${BASE_RPC_URL:-https://sepolia.base.org}
+      - BASE_RPC_FALLBACK_URLS=${BASE_RPC_FALLBACK_URLS:-https://base-sepolia-rpc.publicnode.com}
+      - HTLC_CONTRACT_ADDRESS=${HTLC_CONTRACT_ADDRESS:-0x3e4b1374d2a42ed3aca3470978fc4ec52914ae6f}
+      - USDC_TOKEN_ADDRESS=${USDC_TOKEN_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}
+      - OPERATOR_PRIVATE_KEY=${OPERATOR_PRIVATE_KEY}
+      # Reorg & Finality Protection
+      - WATCHER_REORG_CONFIRMATIONS=${WATCHER_REORG_CONFIRMATIONS:-2}
+      - WATCHER_POLL_INTERVAL_MS=${WATCHER_POLL_INTERVAL_MS:-2000}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+# ==============================================================================
+# Isolated Virtual Networks
+# Invariant: bitcoind and router NEVER share a broadcast domain
+# ==============================================================================
+networks:
+  # Internal chain network for bitcoind RPC/ZMQ communication with LND
+  sovereign_chain_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.240.10.0/24
+          gateway: 10.240.10.1
+
+  # Router network for LND REST/gRPC communication with SovRoute Core
+  sovereign_router_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.240.20.0/24
+          gateway: 10.240.20.1

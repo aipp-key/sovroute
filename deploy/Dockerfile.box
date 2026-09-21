@@ -1,0 +1,61 @@
+# ==============================================================================
+# SovRoute-Box: Lightweight Production Multi-Stage Dockerfile
+# Base: Node.js 22 LTS Alpine (Minimal attack surface)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Stage 1: Build & Smart Contract Artifact Compilation
+# ------------------------------------------------------------------------------
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Install build prerequisites
+RUN apk add --no-cache python3 make g++ git
+
+# Install dependencies with frozen lockfile
+COPY package*.json tsconfig.json hardhat.config.cjs ./
+COPY contracts/ ./contracts/
+
+RUN npm ci
+
+# Compile Solidity smart contracts to generate JSON artifacts and ABIs
+RUN npm run compile
+
+# Copy application source code
+COPY src/ ./src/
+
+# ------------------------------------------------------------------------------
+# Stage 2: Hardened Runtime Container
+# ------------------------------------------------------------------------------
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+# Provision non-root unprivileged service user (UID 2100)
+RUN addgroup -g 2100 -S sovroute && \
+    adduser -u 2100 -S sovroute -G sovroute
+
+# Provision durable storage and secret mount targets
+RUN mkdir -p /data /secrets /tmp && \
+    chown -R sovroute:sovroute /data /secrets /tmp
+
+# Copy runtime node_modules from builder
+COPY --from=builder --chown=sovroute:sovroute /app/package*.json ./
+COPY --from=builder --chown=sovroute:sovroute /app/node_modules ./node_modules
+COPY --from=builder --chown=sovroute:sovroute /app/artifacts ./artifacts
+COPY --from=builder --chown=sovroute:sovroute /app/src ./src
+
+# Switch to unprivileged execution user
+USER sovroute:sovroute
+
+ENV NODE_ENV=production
+ENV PORT=3000
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+
+ENTRYPOINT ["node", "--experimental-strip-types"]
+CMD ["src/index.ts"]
